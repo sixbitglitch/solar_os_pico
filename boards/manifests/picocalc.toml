@@ -71,7 +71,14 @@ SOLAR_OS_BOARD_DISPLAY_MADCTL = "0x48"
 # is what the reference driver selects. The surface pipeline stays RGB565 and
 # the driver expands to RGB666 at the SPI boundary. See doc/ports/picocalc.md.
 SOLAR_OS_BOARD_DISPLAY_COLMOD = "0x66"
-SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "25000000"
+# 50 MHz, not the vendor's 25 MHz default: clockworkpi's own reference driver
+# (Code/picocalc_helloworld/lcdspi/lcdspi.h) defines LCD_SPI_SPEED as 25 MHz
+# but carries a commented-out 50 MHz alternative right next to it - evidence
+# it was tried and left in, not just a hypothetical. Still hardware_spi
+# polling, not the PIO+DMA approach some community ports use for higher
+# rates; see doc/ports/picocalc.md section 7.4 for the full picture and why
+# this port did not go further.
+SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "50000000"
 SOLAR_OS_BOARD_PIN_LCD_SCK = "10"
 SOLAR_OS_BOARD_PIN_LCD_MOSI = "11"
 SOLAR_OS_BOARD_PIN_LCD_MISO = "12"

@@ -550,12 +550,85 @@ bench:
 - SD transfer clock 12.5 MHz — deliberately conservative (the vendor runs the
   *display* at 25 MHz on a different bus); the card slot's timing is
   uncharacterised.
-- Display `preferred_stream_fps` 20 and `max_stream_pixels_per_second` — derived
-  arithmetically from 25 MHz × 3 bytes/pixel, ignoring per-transfer overhead.
+- Display `preferred_stream_fps` 38 and `max_stream_pixels_per_second` — derived
+  arithmetically from 50 MHz × 3 bytes/pixel, ignoring per-transfer overhead.
+  See [§7.4](#74-the-60-fps-question-and-what-picos-corroborates) for where
+  50 MHz comes from and why this pass did not go further.
 - SD init/busy/token timeouts — from the SD specification's nominal figures,
   widened; real cards vary.
 - The battery percent→millivolt curve — a generic single-cell Li-ion
   approximation, flagged in-band by `calibrated = false`.
+
+### 7.4 The 60 fps question, and what PicOS corroborates
+
+After the pass above, this port's own display clock (25 MHz, the vendor's
+plain default) was checked against a second, independent project targeting
+the *exact* same hardware pairing: [jeffory/PicOS](https://github.com/jeffory/PicOS)
+(no license file at the repository root, so nothing from it is copied here —
+read for facts and cross-checks only, all code below is written fresh
+against this port's own architecture). Its README claims its target is
+"[Pimoroni Pico Plus 2 W] in the [PicoCalc] device" - the same module and
+mainboard - and states a working "Double-buffered 60 FPS tear-free display
+via 100MHz SPI".
+
+**What was safe to act on: the clock.** clockworkpi's own
+`Code/picocalc_helloworld/lcdspi/lcdspi.h` defines its `LCD_SPI_SPEED` as
+25 MHz but carries a commented-out 50 MHz alternative directly beside it -
+evidence the vendor tried it, not a hypothetical. This port now runs at
+50 MHz (`SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ`, [§7.3](#73-numbers-that-are-guesses)),
+doubling the fps estimate to 38. This is still the same `hardware_spi`
+polling transfer as before, just at the vendor's own higher-but-still-plain
+setting - not the reason PicOS reaches 60. PicOS gets there with a
+custom PIO0 program driving SCK/MOSI directly at 100 MHz plus DMA and
+double-buffering, bypassing the RP2350's hardware SPI peripheral entirely.
+Doing the same here is real, substantial, timing-critical work (write and
+verify a PIO SPI program, wire up DMA, restructure the present path for
+double-buffering) that this pass did not attempt without hardware to
+validate it against - a bad PIO program at 100 MHz fails differently (and
+less obviously) than a slow but correct one at 25-50 MHz.
+
+**What was NOT safe to act on, and why: the panel controller itself.**
+PicOS's own hardware notes (`CLAUDE.md`) name the panel controller
+**ST7365P** and drive it in native 16-bit RGB565 - directly contradicting
+this port's own controller identification, `ILI9488` in 18-bit/RGB666 mode
+([§5.3](#53-two-design-decisions-that-deviate-from-the-brief-with-reasons)),
+which came from clockworkpi's own reference driver. Re-reading that same
+vendor file settles *why* both can be right on different units, not which
+one this port should switch to: `Code/picocalc_helloworld/lcdspi/lcdspi.c`
+has an `#ifdef ILI9488` branch (18-bit COLMOD `0x66`, this port's assumption)
+and a plain `#else` branch that runs an **ILI9341**-style init instead
+(16-bit, a *third* controller family, matching neither this port nor PicOS).
+Three independent PicoCalc hardware references - the vendor's own two
+branches and PicOS's one - name three different panel controllers between
+them. The most consistent reading is that PicoCalc has shipped with more
+than one panel across its production run, and the vendor's own code has
+grown a compile-time flag to cope with it. This port cannot tell which one
+a given physical unit has without reading it: **if the display comes up
+garbled, mirrored, or with wrong colours, the panel controller identity -
+not the clock, not MADCTL - is the first thing to check.** Reading the
+panel's own ID (a RDID-family command, register `0x04` or `0xD3`
+depending on the family) at boot and logging it, before committing to one
+init sequence, would resolve this definitively and is the natural next
+step - not attempted here, since it needs a real panel to read from.
+
+**What PicOS corroborates, strengthening rather than changing this port:**
+the keyboard co-processor register map and protocol. PicOS's
+`src/hardware.h` independently states I2C1, 10 kHz, SDA=GP6, SCL=GP7,
+address `0x1F` - identical to this port's manifest - plus `KBD_REG_BAT =
+0x0B` and `KBD_REG_BL = 0x05`, matching this port's battery and backlight
+registers exactly, and a comment that "100 kHz caused STM32 lockup after
+extended use (requires power cycle)" - independent field evidence for the
+10 kHz ceiling this port already enforces
+(`src/drivers/pico/picocalc_keyboard.c`'s clamp). Its keyboard driver also
+defines `KEY_MOD_CTRL 0xA5` and treats it as a held modifier combined with
+the next key to synthesise a control character - the same value and the
+same approach this port already took, and independent resolution of the
+"vendor host driver vs. firmware header" Ctrl discrepancy raised in the
+"Keyboard encoding" item under
+[Hardware-validation gap](#hardware-validation-gap) below, in favour of the
+firmware header this port already trusted. No code or behaviour changed
+here; this is corroborating evidence recorded because it meaningfully
+raises confidence in an area this port could not test.
 
 ---
 
@@ -669,16 +742,31 @@ No statement here should be read as "works on hardware". The specific classes
 of thing most likely to compile perfectly and then fail on a bench:
 
 - **Timing.** The 10 kHz I2C ceiling and 16 ms co-processor turnaround, the
-  25 MHz display clock, the 12.5 MHz SD clock, and every SD initialisation and
+  50 MHz display clock, the 12.5 MHz SD clock, and every SD initialisation and
   busy-wait window. None has been observed.
+- **Panel controller identity - the single most likely display failure.**
+  This port assumes ILI9488 in 18-bit/RGB666 mode, per clockworkpi's own
+  reference driver's `#ifdef ILI9488` branch - but that same file's default
+  (non-`ILI9488`) branch assumes ILI9341 (16-bit), and an independent project
+  targeting identical hardware ([jeffory/PicOS](https://github.com/jeffory/PicOS))
+  assumes a third controller, ST7365P (also 16-bit). See
+  [§7.4](#74-the-60-fps-question-and-what-picos-corroborates) for the full
+  picture. **If the display comes up garbled, mirrored, or with wrong
+  colours, this - not the clock, not MADCTL - is the first thing to check**,
+  ideally by reading the panel's own ID register at boot before assuming
+  any of the three.
 - **Display geometry.** `MADCTL 0x48` with zero row/column offsets is what the
   vendor's driver uses, but if the image comes out shifted, mirrored or wrapped,
-  the offsets and MADCTL are the first things to try.
-- **Keyboard encoding.** The register map is from vendor firmware, but the
-  vendor's *host* reference driver contains a legacy path keying on `0x7e02`/
-  `0x7e03` for Ctrl that does not match `keyboard.h`'s `KEY_MOD_CTRL` (0xA5).
-  This port implements the firmware constants. If Ctrl behaves oddly on a unit
-  with older keyboard firmware, that discrepancy is the place to look.
+  the offsets and MADCTL are the next thing to try, after the controller
+  identity above.
+- **Keyboard encoding.** The register map is from vendor firmware; a second,
+  independent project on identical hardware (PicOS) corroborates the exact
+  register map, addresses, the 10 kHz ceiling (with field evidence: "100 kHz
+  caused STM32 lockup after extended use"), and `KEY_MOD_CTRL` (0xA5) matching
+  the firmware header this port trusts over the vendor's *host* reference
+  driver's legacy `0x7e02`/`0x7e03` Ctrl path - see
+  [§7.4](#74-the-60-fps-question-and-what-picos-corroborates). This is now the
+  best-corroborated part of the port, not the least.
 - **SD card variability.** Cards differ widely in how long they take to leave
   busy and how they respond to marginal clocking. The retry and timeout
   behaviour is from the specification, not from observation.

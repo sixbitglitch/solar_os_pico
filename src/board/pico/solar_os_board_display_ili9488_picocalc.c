@@ -206,13 +206,18 @@ esp_err_t solar_os_board_display_init(solar_os_board_display_t *display)
     display->frame_formats =
         SOLAR_OS_DISPLAY_FORMAT_INDEX8_BIT | SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
     /*
-     * Throughput estimate, NOT a measurement. At 25 MHz with 3 bytes per
-     * pixel a full 320x320 frame is ~102 KB, so roughly 30 fps is the
-     * theoretical ceiling before per-transfer overhead. 20 fps is advertised
-     * to leave headroom; this needs revisiting once it has run on hardware.
+     * Throughput estimate, NOT a measurement. At 50 MHz (see
+     * SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ's comment in the board manifest)
+     * with 3 bytes per pixel a full 320x320 frame is ~102 KB, so roughly
+     * 60 fps is the theoretical ceiling before per-transfer overhead. 38 fps
+     * is advertised to leave headroom for that overhead; this is still a
+     * hardware_spi polling transfer, not the PIO+DMA double-buffered
+     * approach that reaches a full 60 fps in community ports of this same
+     * hardware (see doc/ports/picocalc.md section 7.4) - and none of it has
+     * run on hardware.
      */
-    display->preferred_stream_fps = 20;
-    display->max_stream_pixels_per_second = 320U * 320U * 20U;
+    display->preferred_stream_fps = 38;
+    display->max_stream_pixels_per_second = 320U * 320U * 38U;
     display->ready = true;
 
     return ESP_OK;
