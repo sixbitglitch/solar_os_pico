@@ -58,6 +58,10 @@ typedef enum {
 typedef struct {
     size_t used_entries;
     size_t free_entries;
+    /* ESP-IDF distinguishes "free" (not written) from "available" (free minus
+     * the entries reserved for internal bookkeeping). The RAM-backed store has
+     * no such reservation, so the two are equal here. */
+    size_t available_entries;
     size_t total_entries;
     size_t namespace_count;
 } nvs_stats_t;

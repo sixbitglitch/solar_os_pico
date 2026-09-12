@@ -6,6 +6,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/spi_pico.cmake")
 list(APPEND SOLAR_OS_BOARD_SRCS
     "drivers/pico/tft_ili9488_picocalc.c"
     "board/pico/solar_os_board_display_ili9488_picocalc.c"
+    # Shared, hardware-agnostic: the solar_os_board_display_* wrapper
+    # functions that forward through the ops vtable. Same file the ESP32
+    # boards use.
+    "board/solar_os_board_display_expansion.c"
 )
 list(APPEND SOLAR_OS_BOARD_PICO_LIBS
     hardware_spi

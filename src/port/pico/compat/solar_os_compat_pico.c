@@ -674,6 +674,7 @@ esp_err_t nvs_get_stats(const char *part_name, nvs_stats_t *stats)
     stats->used_entries = used;
     stats->total_entries = COMPAT_NVS_MAX_ENTRIES;
     stats->free_entries = COMPAT_NVS_MAX_ENTRIES - used;
+    stats->available_entries = stats->free_entries;
     stats->namespace_count = namespaces;
     return ESP_OK;
 }

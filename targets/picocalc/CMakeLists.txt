@@ -138,6 +138,22 @@ endif()
 
 include("${SOLAR_OS_FLAVOR_CMAKE}")
 
+# Embedded manual. Same generator the ESP-IDF build uses; it turns doc/manual
+# into a C header the `help`/`man` commands read.
+set(SOLAR_OS_MANUAL_HEADER "${SOLAR_OS_GENERATED_DIR}/solar_os_manual_data.h")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+            "${SOLAR_OS_PROJECT_DIR}/scripts/generate_manual.py"
+            --input "${SOLAR_OS_PROJECT_DIR}/doc/manual"
+            --packages "${SOLAR_OS_PROJECT_DIR}/packages/solar_os_packages.toml"
+            --output "${SOLAR_OS_MANUAL_HEADER}"
+    RESULT_VARIABLE SOLAR_OS_MANUAL_GEN_RESULT
+    OUTPUT_VARIABLE SOLAR_OS_MANUAL_GEN_OUTPUT
+    ERROR_VARIABLE SOLAR_OS_MANUAL_GEN_OUTPUT)
+if(NOT SOLAR_OS_MANUAL_GEN_RESULT EQUAL 0)
+    message(FATAL_ERROR "manual generation failed:\n${SOLAR_OS_MANUAL_GEN_OUTPUT}")
+endif()
+
 message(STATUS "SolarOS board   : ${SOLAR_OS_BOARD_NAME}")
 message(STATUS "SolarOS flavour : ${SOLAR_OS_FLAVOR_NAME}")
 message(STATUS "SolarOS groups  : ${SOLAR_OS_PACKAGE_GROUP_LIST}")
@@ -162,6 +178,8 @@ set(SOLAR_OS_INCLUDE_DIRS
     "${SOLAR_OS_PROJECT_DIR}/include"
     "${SOLAR_OS_PROJECT_DIR}/components/u8g2/src/clib"
     "${SOLAR_OS_PROJECT_DIR}/components/fatfs/source"
+    "${SOLAR_OS_PROJECT_DIR}/components/cJSON"
+    "${SOLAR_OS_PROJECT_DIR}/components/miniz"
 )
 
 # The board profile's capabilities are CMake variables; the C sources test them
@@ -189,7 +207,13 @@ set(SOLAR_OS_COMPILE_OPTIONS
 # Vendored as portable, hardware-agnostic C. Reused verbatim: the ILI9488
 # driver supplies u8x8 byte/gpio callbacks rather than replacing the renderer.
 file(GLOB SOLAR_OS_U8G2_SRCS "${SOLAR_OS_PROJECT_DIR}/components/u8g2/src/clib/*.c")
-add_library(solar_os_u8g2 STATIC ${SOLAR_OS_U8G2_SRCS})
+# Font data lives outside clib: the SolarOS terminal faces are generated into
+# fonts/build/u8g2/, and the launcher's icon glyphs come from u8g2's own
+# open-iconic set under components/u8g2/src/fonts/.
+file(GLOB SOLAR_OS_FONT_SRCS
+    "${SOLAR_OS_PROJECT_DIR}/fonts/build/u8g2/*.c"
+    "${SOLAR_OS_PROJECT_DIR}/components/u8g2/src/fonts/*.c")
+add_library(solar_os_u8g2 STATIC ${SOLAR_OS_U8G2_SRCS} ${SOLAR_OS_FONT_SRCS})
 target_include_directories(solar_os_u8g2 PUBLIC
     "${SOLAR_OS_PROJECT_DIR}/components/u8g2/src/clib")
 target_compile_options(solar_os_u8g2 PRIVATE -w)
@@ -218,11 +242,34 @@ if(SOLAR_OS_BOARD_NEEDS_FATFS)
         FreeRTOS-Kernel-Heap4)
 endif()
 
+# --- cJSON / miniz ----------------------------------------------------------
+# Vendored verbatim (MIT). ESP-IDF pulls these in as managed components; this
+# target carries them under components/ instead.
+add_library(solar_os_cjson STATIC "${SOLAR_OS_PROJECT_DIR}/components/cJSON/cJSON.c")
+target_include_directories(solar_os_cjson PUBLIC "${SOLAR_OS_PROJECT_DIR}/components/cJSON")
+target_compile_options(solar_os_cjson PRIVATE -w)
+
+# miniz upstream is split across four translation units; the single-file
+# amalgamation is generated at release time and is not in the repository, so
+# the split sources are carried instead.
+add_library(solar_os_miniz STATIC
+    "${SOLAR_OS_PROJECT_DIR}/components/miniz/miniz.c"
+    "${SOLAR_OS_PROJECT_DIR}/components/miniz/miniz_tdef.c"
+    "${SOLAR_OS_PROJECT_DIR}/components/miniz/miniz_tinfl.c"
+    "${SOLAR_OS_PROJECT_DIR}/components/miniz/miniz_zip.c"
+)
+target_include_directories(solar_os_miniz PUBLIC "${SOLAR_OS_PROJECT_DIR}/components/miniz")
+target_compile_options(solar_os_miniz PRIVATE -w)
+# miniz defaults to using stdio for whole-file helpers; this target has a
+# filesystem through the VFS shim, so they are left enabled.
+target_compile_definitions(solar_os_miniz PUBLIC MINIZ_NO_TIME=1)
+
 # --- Compatibility shim -----------------------------------------------------
 add_library(solar_os_compat STATIC
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_gpio.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_periph.c"
+    "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_vfs.c"
 )
 target_include_directories(solar_os_compat PUBLIC ${SOLAR_OS_INCLUDE_DIRS})
 target_compile_options(solar_os_compat PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
@@ -238,6 +285,9 @@ target_link_libraries(solar_os_compat PUBLIC
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
 )
+if(SOLAR_OS_BOARD_NEEDS_FATFS)
+    target_link_libraries(solar_os_compat PUBLIC solar_os_fatfs)
+endif()
 
 # --- Board drivers ----------------------------------------------------------
 # SOLAR_OS_BOARD_SRCS is populated by the board driver fragments under
@@ -333,7 +383,11 @@ option(SOLAR_OS_PICOCALC_FULL_FIRMWARE
        "Attempt to link the complete picocalc-core firmware" OFF)
 
 if(SOLAR_OS_PICOCALC_FULL_FIRMWARE)
-    add_executable(picocalc-core ${SOLAR_OS_CORE_SRC_PATHS})
+    # solar_os_pico_main.c supplies main() and bridges to ESP-IDF's app_main().
+    add_executable(picocalc-core
+        ${SOLAR_OS_CORE_SRC_PATHS}
+        "${SOLAR_OS_SRC_DIR}/port/pico/solar_os_pico_main.c"
+    )
     target_include_directories(picocalc-core PRIVATE ${SOLAR_OS_INCLUDE_DIRS})
     target_compile_options(picocalc-core PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
     target_compile_definitions(picocalc-core PRIVATE ${SOLAR_OS_COMPILE_DEFINITIONS})
@@ -342,6 +396,8 @@ if(SOLAR_OS_PICOCALC_FULL_FIRMWARE)
         solar_os_rtos
         solar_os_compat
         solar_os_u8g2
+        solar_os_cjson
+        solar_os_miniz
         pico_stdlib
         pico_multicore
         hardware_adc

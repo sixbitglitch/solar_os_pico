@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -17,7 +18,14 @@ extern "C" {
 
 typedef struct {
     const char *server;
+    bool start;
 } esp_sntp_config_t;
+
+/* ESP-IDF provides this as a designated-initialiser macro; sources use it to
+ * build a config inline. Kept so those call sites compile unchanged even
+ * though the functions below refuse. */
+#define ESP_NETIF_SNTP_DEFAULT_CONFIG(server_name) \
+    { .server = (server_name), .start = true }
 
 static inline esp_err_t esp_netif_sntp_init(const void *config)
 { (void)config; return ESP_ERR_NOT_SUPPORTED; }
