@@ -16,7 +16,10 @@ BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DEFINE_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 HEADER_INCLUDE_RE = re.compile(r"^[A-Za-z0-9_./-]+\.h$")
-TARGET_GPIO_MAX = {"esp32": 39, "esp32s3": 48}
+# rp2350 covers the RP2350B as fitted to the Pimoroni Pico Plus 2 W, which
+# exposes GPIO0-GPIO47. The narrower RP2350A (30 GPIOs) is a strict subset, so
+# a manifest targeting it simply declares fewer pins.
+TARGET_GPIO_MAX = {"esp32": 39, "esp32s3": 48, "rp2350": 47}
 POLICIES = {"free", "releasable", "fixed"}
 BUS_PROTOCOLS = {"i2c", "spi", "uart", "onewire", "ps2"}
 BINDING_KINDS = {
@@ -125,7 +128,9 @@ def load_driver_catalog(path: Path) -> dict[str, DriverDef]:
             raise ManifestError(f"{prefix}.package is required")
         targets = tuple(_string_list(raw.get("targets"), f"{prefix}.targets"))
         if not targets or any(target not in TARGET_GPIO_MAX for target in targets):
-            raise ManifestError(f"{prefix}.targets must select esp32 and/or esp32s3")
+            raise ManifestError(
+                f"{prefix}.targets must select from: {', '.join(sorted(TARGET_GPIO_MAX))}"
+            )
         raw_bindings = raw.get("bindings", [])
         if not isinstance(raw_bindings, list):
             raise ManifestError(f"{prefix}.bindings must be an array of tables")
@@ -335,8 +340,15 @@ def validate_board(board: dict[str, Any], drivers: dict[str, DriverDef]) -> None
             raise ManifestError(f"board.{key} is required")
     mcu = target.get("mcu")
     if mcu not in TARGET_GPIO_MAX:
-        raise ManifestError("target.mcu must be esp32 or esp32s3")
-    if not isinstance(target.get("platformio_board"), str) or not target["platformio_board"]:
+        raise ManifestError(
+            "target.mcu must be one of: " + ", ".join(sorted(TARGET_GPIO_MAX))
+        )
+    # PlatformIO only drives the ESP-IDF targets. Targets built through their
+    # own SDK (rp2350 via pico-sdk, see doc/ports/picocalc.md) have no
+    # PlatformIO board and must not invent one.
+    if mcu.startswith("esp32") and (
+        not isinstance(target.get("platformio_board"), str) or not target["platformio_board"]
+    ):
         raise ManifestError("target.platformio_board is required")
     capabilities = set(_string_list(build.get("capabilities"), "build.capabilities"))
     _string_list(build.get("drivers"), "build.drivers")

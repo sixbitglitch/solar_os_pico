@@ -441,6 +441,11 @@ label = "CardKB keyboard"
 category = "Expansion hardware"
 members = ["expansion_cardkb"]
 
+[groups.picocalc_keyboard]
+label = "PicoCalc keyboard"
+category = "Expansion hardware"
+members = ["expansion_picocalc_keyboard"]
+
 [groups.analog_joystick]
 label = "Analog joystick"
 category = "Expansion hardware"
@@ -1220,6 +1225,21 @@ sources = [
 ]
 requires = ["esp_driver_i2c"]
 capabilities = ["expansion_i2c"]
+
+# Clockwork PicoCalc STM32 keyboard/PMU co-processor. rp2350-only: the driver
+# talks to the pico-sdk hardware_i2c peripheral directly. See
+# doc/ports/picocalc.md for the register map and its primary source.
+[packages.expansion_picocalc_keyboard]
+label = "expansion.picocalc-keyboard"
+expansion_drivers = ["solar_os_picocalc_keyboard_expansion_driver"]
+depends = ["service_expansion", "service_i2c"]
+sources = [
+  "drivers/pico/picocalc_keyboard.c",
+  "services/solar_os_picocalc_keyboard.c",
+  "services/solar_os_picocalc_keyboard_driver.c",
+]
+capabilities = ["expansion_i2c"]
+targets = ["rp2350"]
 
 [packages.board_cl32_core]
 label = "board.cl32-core"

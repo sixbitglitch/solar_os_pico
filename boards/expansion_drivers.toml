@@ -20,6 +20,30 @@ hint = "0x5f"
 required = true
 allowed = [0x5f]
 
+# Clockwork PicoCalc STM32F103 keyboard/PMU co-processor. Same shape as cardkb
+# (polled I2C keyboard on a bus+address binding), but a different register
+# protocol: see doc/ports/picocalc.md.
+[drivers.picocalc-kbd]
+summary = "PicoCalc STM32 keyboard"
+package = "expansion_picocalc_keyboard"
+targets = ["rp2350"]
+capabilities = ["expansion_i2c"]
+board_capabilities = ["key", "battery"]
+default_name = "keyboard0"
+
+[[drivers.picocalc-kbd.bindings]]
+key = "i2c"
+kind = "i2c_bus"
+hint = "bus"
+required = true
+
+[[drivers.picocalc-kbd.bindings]]
+key = "addr"
+kind = "i2c_address"
+hint = "0x1f"
+required = true
+allowed = [0x1f]
+
 [drivers.tca8418]
 summary = "4x10 matrix keyboard"
 package = "tca8418"

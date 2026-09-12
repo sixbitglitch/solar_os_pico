@@ -1,0 +1,335 @@
+schema = 1
+
+# Clockwork PicoCalc fitted with a Pimoroni Pico Plus 2 W (RP2350B).
+#
+# Every pin and register in this file is sourced from clockworkpi's own
+# repository (github.com/clockworkpi/PicoCalc) unless a comment says otherwise.
+# See doc/ports/picocalc.md section "Hardware sources used" for the per-item
+# citation and confidence level. Nothing here has been checked against real
+# hardware - there was none available when this manifest was written.
+
+[board]
+id = "picocalc"
+name = "Clockwork PicoCalc (Pico Plus 2 W)"
+vendor = "Clockwork"
+module = "Pimoroni Pico Plus 2 W (RP2350B, 16 MB flash, CYW43439)"
+
+[target]
+mcu = "rp2350"
+# No platformio_board: this target is built through pico-sdk under
+# targets/picocalc/, not PlatformIO. See doc/ports/picocalc.md section 1.
+pico_board = "pimoroni_pico_plus2_w_rp2350"
+
+[build]
+drivers = [
+  "uart_pico",
+  "gpio_pico",
+  "i2c_pico",
+  "spi_pico",
+  "adc_pico",
+  "pwm_pico",
+  "display_ili9488_picocalc",
+  "storage_sd_spi_pico",
+  "battery_picocalc",
+]
+capabilities = [
+  "display", "gfx", "display_brightness", "streaming_display",
+  "uart", "sd", "i2c", "spi", "gpio", "adc", "pwm", "key", "battery",
+  "expansion_gpio", "expansion_i2c", "expansion_spi", "expansion_uart",
+  "expansion_adc", "expansion_pwm",
+]
+required_packages = []
+# The Pico Plus 2 W does carry 8 MB of APS6404 PSRAM on GPIO47, but this port
+# deliberately does not bring it up - nothing in the picocalc-core flavour
+# needs it. Declared as 0 so the PSRAM capability stays off and the task
+# allocator reports external stacks as unsupported. See doc/ports/picocalc.md
+# section 2.
+psram_bytes = 0
+
+[header]
+includes = ["solar_os_keys.h"]
+
+[defines]
+# --- Display: ILI9488 320x320, spi1 -----------------------------------------
+# Init sequence, MADCTL and geometry taken verbatim from clockworkpi's
+# reference driver Code/picocalc_helloworld/lcdspi/lcdspi.c (pico_lcd_init,
+# #ifdef ILI9488 branch).
+SOLAR_OS_BOARD_DISPLAY_CONTROLLER = '"ILI9488"'
+SOLAR_OS_BOARD_DISPLAY_CONTROLLER_ILI9488 = "1"
+SOLAR_OS_BOARD_DISPLAY_DRIVER_NAME = '"ili9488"'
+SOLAR_OS_BOARD_DISPLAY_WIDTH = "320"
+SOLAR_OS_BOARD_DISPLAY_HEIGHT = "320"
+SOLAR_OS_BOARD_DISPLAY_NATIVE_WIDTH = "320"
+SOLAR_OS_BOARD_DISPLAY_NATIVE_HEIGHT = "320"
+SOLAR_OS_BOARD_DISPLAY_U8G2_ROTATION = "U8G2_R0"
+SOLAR_OS_BOARD_DISPLAY_COL_OFFSET = "0"
+SOLAR_OS_BOARD_DISPLAY_ROW_OFFSET = "0"
+# 0x48 = MX | BGR, exactly as the reference driver writes it.
+SOLAR_OS_BOARD_DISPLAY_MADCTL = "0x48"
+# ILI9488 over 4-wire SPI cannot accept 16bpp pixel data for a memory write;
+# 0x66 (18bpp, 3 bytes/pixel) is the only usable COLMOD on this interface, and
+# is what the reference driver selects. The surface pipeline stays RGB565 and
+# the driver expands to RGB666 at the SPI boundary. See doc/ports/picocalc.md.
+SOLAR_OS_BOARD_DISPLAY_COLMOD = "0x66"
+SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "25000000"
+SOLAR_OS_BOARD_PIN_LCD_SCK = "10"
+SOLAR_OS_BOARD_PIN_LCD_MOSI = "11"
+SOLAR_OS_BOARD_PIN_LCD_MISO = "12"
+SOLAR_OS_BOARD_PIN_LCD_CS = "13"
+SOLAR_OS_BOARD_PIN_LCD_DC = "14"
+SOLAR_OS_BOARD_PIN_LCD_RST = "15"
+# The LCD backlight is NOT on a Pico GPIO. It is driven by the STM32
+# co-processor and set by writing register 0x05 (REG_ID_BKL) over the keyboard
+# I2C link, in 16 steps (LCD_BACKLIGHT_STEP in the STM32 firmware's
+# conf_app.h). Hence no SOLAR_OS_BOARD_PIN_LCD_BL here.
+SOLAR_OS_BOARD_LCD_BACKLIGHT_I2C = "1"
+SOLAR_OS_BOARD_LCD_BACKLIGHT_PULSE_STEPS = "0"
+SOLAR_OS_BOARD_LCD_BACKLIGHT_STEP_PERCENT = "0"
+
+# --- Keyboard / PMU co-processor (STM32F103, i2c1) --------------------------
+# Address and bus speed from Code/picocalc_helloworld/i2ckbd/i2ckbd.h; the
+# 10 kHz ceiling is a hard requirement noted in that header, not a default.
+SOLAR_OS_BOARD_PIN_I2C_SDA = "6"
+SOLAR_OS_BOARD_PIN_I2C_SCL = "7"
+SOLAR_OS_BOARD_I2C_PORT = "1"
+SOLAR_OS_BOARD_I2C_SPEED_HZ = "10000"
+SOLAR_OS_BOARD_PICOCALC_KBD_ADDRESS = "0x1f"
+
+# --- SD card (spi0) ---------------------------------------------------------
+# From Code/MP3Player/config.h; these are also the Pico Plus 2 W's
+# PICO_DEFAULT_SPI_* pins, which corroborates them.
+SOLAR_OS_BOARD_SPI_HOST = "0"
+SOLAR_OS_BOARD_SPI_NAME = '"spi0"'
+SOLAR_OS_BOARD_PIN_SPI_SCLK = "18"
+SOLAR_OS_BOARD_PIN_SPI_MOSI = "19"
+SOLAR_OS_BOARD_PIN_SPI_MISO = "16"
+SOLAR_OS_BOARD_PIN_SD_CS = "17"
+# Card-detect pin from Code/pico_multi_booter/boot.c (SD_DET_PIN), active low
+# with an internal pull-up.
+SOLAR_OS_BOARD_PIN_SD_DETECT = "22"
+SOLAR_OS_BOARD_SD_DETECT_ACTIVE_LEVEL = "0"
+SOLAR_OS_BOARD_SPI_MAX_TRANSFER_SZ = "4096"
+
+# --- UART0 ------------------------------------------------------------------
+SOLAR_OS_BOARD_UART_PORT = "0"
+SOLAR_OS_BOARD_PIN_UART_TX = "0"
+SOLAR_OS_BOARD_PIN_UART_RX = "1"
+
+# --- Battery ----------------------------------------------------------------
+# Reported by the STM32 co-processor from an AXP2101 PMU, read as register
+# 0x0b (REG_ID_BAT). The value is a PERCENTAGE with bit 7 set while charging -
+# not millivolts. See doc/ports/picocalc.md for how that is reconciled with
+# solar_os_board_battery_sample_t.
+SOLAR_OS_BOARD_BATTERY_VIA_PICOCALC_KBD = "1"
+
+[runtime]
+uart_ports = ["0", "1"]
+
+# ---------------------------------------------------------------------------
+# Pins
+#
+# "fixed" pins have a confirmed dedicated function on the PicoCalc mainboard.
+# "free" + expansion pins are the Pico Plus 2 W's own extra castellations
+# (GPIO40-46), which are NOT routed through the PicoCalc's 40-pin Pico socket -
+# the mainboard only wires the standard Pico footprint. They are usable only if
+# the module's extra headers are reachable in a given build. This is called out
+# again in doc/ports/picocalc.md so nobody mistakes them for PicoCalc pins.
+# ---------------------------------------------------------------------------
+[[pins]]
+gpio = 0
+policy = "fixed"
+role = "uart0 tx"
+
+[[pins]]
+gpio = 1
+policy = "fixed"
+role = "uart0 rx"
+
+[[pins]]
+gpio = 6
+policy = "fixed"
+role = "keyboard i2c sda"
+
+[[pins]]
+gpio = 7
+policy = "fixed"
+role = "keyboard i2c scl"
+
+[[pins]]
+gpio = 10
+policy = "fixed"
+role = "lcd spi sclk"
+
+[[pins]]
+gpio = 11
+policy = "fixed"
+role = "lcd spi mosi"
+
+[[pins]]
+gpio = 12
+policy = "fixed"
+role = "lcd spi miso"
+
+[[pins]]
+gpio = 13
+policy = "fixed"
+role = "lcd cs"
+
+[[pins]]
+gpio = 14
+policy = "fixed"
+role = "lcd dc"
+
+[[pins]]
+gpio = 15
+policy = "fixed"
+role = "lcd reset"
+
+[[pins]]
+gpio = 16
+policy = "fixed"
+role = "sd spi miso"
+
+[[pins]]
+gpio = 17
+policy = "fixed"
+role = "sd cs"
+
+[[pins]]
+gpio = 18
+policy = "fixed"
+role = "sd spi sclk"
+
+[[pins]]
+gpio = 19
+policy = "fixed"
+role = "sd spi mosi"
+
+[[pins]]
+gpio = 22
+policy = "fixed"
+role = "sd card detect"
+
+[[pins]]
+gpio = 26
+policy = "fixed"
+role = "audio pwm left (reserved, unused this pass)"
+
+[[pins]]
+gpio = 27
+policy = "fixed"
+role = "audio pwm right (reserved, unused this pass)"
+
+# Pico Plus 2 W extra castellations. ADC_BASE_PIN is 40 on RP2350B
+# (PICO_RP2350A == 0), so GPIO40-46 are the ADC-capable pins. GPIO45 is the
+# module's USER switch and GPIO47 is its PSRAM chip select, so both are
+# excluded.
+[[pins]]
+gpio = 40
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc0)"
+
+[[pins]]
+gpio = 41
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc1)"
+
+[[pins]]
+gpio = 42
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc2)"
+
+[[pins]]
+gpio = 43
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc3)"
+
+[[pins]]
+gpio = 44
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc4)"
+
+[[pins]]
+gpio = 46
+policy = "free"
+expansion = true
+user = true
+adc = true
+pwm = true
+role = "module expansion (adc6)"
+
+# ---------------------------------------------------------------------------
+# Buses
+# ---------------------------------------------------------------------------
+[[buses]]
+name = "i2c1"
+protocol = "i2c"
+port = 1
+sda = 6
+scl = 7
+# 10 kHz is mandatory for the STM32 co-processor, per clockworkpi's own
+# i2ckbd.h comment. Do not raise this.
+speed_hz = 10000
+sharing = "shared"
+
+[[buses]]
+name = "spi1"
+protocol = "spi"
+host = 1
+sclk = 10
+miso = 12
+mosi = 11
+cs = [13]
+max_transfer_size = 4096
+sharing = "exclusive"
+
+[[buses]]
+name = "spi0"
+protocol = "spi"
+host = 0
+sclk = 18
+miso = 16
+mosi = 19
+cs = [17]
+max_transfer_size = 4096
+sharing = "shared"
+
+[[buses]]
+name = "uart0"
+protocol = "uart"
+port = 0
+tx = 0
+rx = 1
+baud_rate = 115200
+sharing = "exclusive"
+
+# ---------------------------------------------------------------------------
+# Default expansion devices
+# ---------------------------------------------------------------------------
+[[devices]]
+name = "keyboard0"
+driver = "picocalc-kbd"
+
+[devices.bindings]
+i2c = "i2c1"
+addr = 0x1f

@@ -1,0 +1,52 @@
+[flavor]
+name = "picocalc-core"
+description = "SolarOS terminal baseline for the Clockwork PicoCalc on a Pico Plus 2 W (RP2350)."
+
+# Trimmed from flavors/core.toml. Only groups this port actually implements are
+# enabled; see doc/ports/picocalc.md for the full deferred list and the reason
+# each omission is deliberate rather than an oversight.
+#
+# Deliberately OFF (do not enable without reading the port doc first):
+#   wifi, bluetooth       - no CYW43439 driver and no lwIP in this target yet.
+#   ssh                   - depends on the net package, which depends on wifi.
+#   http_client, wireguard- same: net package.
+#   audio_support         - no audio backend ported.
+#   cardkb, ps2_keyboard  - replaced by the PicoCalc STM32 keyboard driver.
+#   rfm69, rfm95          - no radio on this hardware.
+#   midi, sump            - depend on transports/jobs not ported.
+#   logic_analyzer        - depends on the SUMP capture path.
+#   sdmmc                 - this port does SD over SPI, not SDIO.
+#   sdspi                 - that group is the *expansion* SPI-SD package, whose
+#                           sources (drivers/sd_card.c) are ESP-IDF sdspi/FATFS
+#                           glue. This port supplies SD as a *board* driver
+#                           instead (boards/drivers/storage_sd_spi_pico.cmake),
+#                           so sd_storage is on but sdspi stays off.
+#   neopixel, pcd8544,
+#   ssd1683, ssd1306,
+#   analog_joystick,
+#   ps2_mouse, audio_pwm,
+#   pcm5102, pcm1808      - no such hardware on the PicoCalc mainboard.
+#   python, lua, all ble* - out of scope for this pass.
+
+[groups]
+hardware_shell = true
+filesystem = true
+sd_storage = true
+gpio = true
+i2c = true
+spi = true
+uart = true
+adc = true
+pwm = true
+logging = true
+battery_monitor = true
+embedded_docs = true
+serial_terminal = true
+editor = true
+pager = true
+files = true
+launcher = true
+io = true
+clock = true
+calculator = true
+picocalc_keyboard = true
