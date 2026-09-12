@@ -8,6 +8,9 @@
  */
 #pragma once
 
+#include <inttypes.h>   /* PRIu64 and friends: ESP-IDF headers
+                           pull these in transitively, and the shared
+                           sources rely on that. */
 #include <stdint.h>
 
 #ifdef __cplusplus

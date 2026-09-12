@@ -81,7 +81,8 @@ set(SOLAR_OS_BOARD_CMAKE "${SOLAR_OS_GENERATED_DIR}/solar_os_board_profile.cmake
 # SOLAR_OS_BOARD_GENERATED is defined.
 set(SOLAR_OS_BOARD_HEADER "${SOLAR_OS_GENERATED_DIR}/solar_os_board_generated.h")
 set(SOLAR_OS_FLAVOR_CMAKE "${SOLAR_OS_GENERATED_DIR}/solar_os_flavor.cmake")
-set(SOLAR_OS_FLAVOR_HEADER "${SOLAR_OS_GENERATED_DIR}/solar_os_flavor.h")
+# Must be this exact name: the shared sources include "solar_os_config.h".
+set(SOLAR_OS_FLAVOR_HEADER "${SOLAR_OS_GENERATED_DIR}/solar_os_config.h")
 
 file(MAKE_DIRECTORY "${SOLAR_OS_GENERATED_DIR}")
 
@@ -221,6 +222,7 @@ endif()
 add_library(solar_os_compat STATIC
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_gpio.c"
+    "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_periph.c"
 )
 target_include_directories(solar_os_compat PUBLIC ${SOLAR_OS_INCLUDE_DIRS})
 target_compile_options(solar_os_compat PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
@@ -230,6 +232,9 @@ target_link_libraries(solar_os_compat PUBLIC
     pico_rand
     hardware_gpio
     hardware_watchdog
+    hardware_i2c
+    hardware_pwm
+    hardware_clocks
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
 )

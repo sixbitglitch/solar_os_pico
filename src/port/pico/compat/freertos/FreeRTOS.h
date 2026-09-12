@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <inttypes.h>   /* PRIu64 and friends: ESP-IDF headers
+                           pull these in transitively, and the shared
+                           sources rely on that. */
 #include <FreeRTOS.h>   /* the real FreeRTOS-Kernel header: distinct relative path, so this cannot recurse */
 
 #ifdef __cplusplus
