@@ -28,6 +28,7 @@
 #include "freertos/task.h"
 #include "picocalc_keyboard.h"
 #include "solar_os_board.h"
+#include "solar_os_buses.h"
 #include "solar_os_input.h"
 #include "solar_os_keys.h"
 #include "solar_os_task.h"
@@ -370,14 +371,38 @@ esp_err_t solar_os_picocalc_keyboard_attach(const char *name,
                         TAG,
                         "invalid bindings");
 
+    /*
+     * i2c1 is a shared bus (display backlight and the battery gauge are also
+     * on it, plus generic "i2c" expansion commands) - see
+     * boards/manifests/picocalc.toml. Taking a lease here is what makes the
+     * generic bus layer bring the peripheral up (or confirms it already did,
+     * for a board profile where something else got there first) instead of
+     * this driver silently calling i2c_init() itself and racing whoever else
+     * touches it. The lease is intentionally never released on the success
+     * path: exactly one co-processor exists, soldered to the mainboard, for
+     * the life of the firmware.
+     */
+    ESP_RETURN_ON_ERROR(solar_os_bus_acquire(i2c_bus, SOLAR_OS_BUS_PROTOCOL_I2C, name),
+                        TAG,
+                        "i2c bus lease failed");
+
+    i2c_master_bus_handle_t bus_handle = NULL;
+    int port = -1;
+    esp_err_t ret = solar_os_bus_i2c_get_handle(i2c_bus, &bus_handle, &port);
+    if (ret != ESP_OK) {
+        (void)solar_os_bus_release(i2c_bus, SOLAR_OS_BUS_PROTOCOL_I2C, name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "i2c bus handle unavailable");
+    }
+
     const picocalc_kbd_config_t config = {
-        .i2c_index = SOLAR_OS_BOARD_I2C_PORT,
-        .sda_pin = SOLAR_OS_BOARD_PIN_I2C_SDA,
-        .scl_pin = SOLAR_OS_BOARD_PIN_I2C_SCL,
+        .i2c_index = (uint8_t)port,
         .address = address,
-        .speed_hz = SOLAR_OS_BOARD_I2C_SPEED_HZ,
     };
-    ESP_RETURN_ON_ERROR(picocalc_kbd_init(&config), TAG, "co-processor not found");
+    ret = picocalc_kbd_init(&config);
+    if (ret != ESP_OK) {
+        (void)solar_os_bus_release(i2c_bus, SOLAR_OS_BUS_PROTOCOL_I2C, name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "co-processor not found");
+    }
 
     memset(&keyboard_device, 0, sizeof(keyboard_device));
     keyboard_device.active = true;
@@ -391,6 +416,7 @@ esp_err_t solar_os_picocalc_keyboard_attach(const char *name,
                                             &keyboard_device.input_source);
     if (err != ESP_OK) {
         picocalc_kbd_deinit();
+        (void)solar_os_bus_release(i2c_bus, SOLAR_OS_BUS_PROTOCOL_I2C, name);
         clear_device(&keyboard_device);
         return err;
     }
@@ -404,6 +430,7 @@ esp_err_t solar_os_picocalc_keyboard_attach(const char *name,
                                              tskNO_AFFINITY,
                                              SOLAR_OS_TASK_ROLE_BACKGROUND) != pdPASS) {
         picocalc_kbd_deinit();
+        (void)solar_os_bus_release(i2c_bus, SOLAR_OS_BUS_PROTOCOL_I2C, name);
         clear_device(&keyboard_device);
         return ESP_ERR_NO_MEM;
     }

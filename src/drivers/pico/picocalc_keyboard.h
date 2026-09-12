@@ -124,13 +124,16 @@ typedef enum {
 #define PICOCALC_KEY_POWER       0x91U
 
 typedef struct {
-    /* 0 or 1: which RP2350 I2C block. The PicoCalc wires the co-processor to
-     * i2c1 on GPIO6/7. */
+    /*
+     * 0 or 1: which RP2350 I2C block. The PicoCalc wires the co-processor to
+     * i2c1 on GPIO6/7. This is the only hardware detail picocalc_kbd_init()
+     * still needs directly - pin muxing, pull-ups and the bus clock are the
+     * generic bus layer's job (solar_os_bus_acquire(), driven by
+     * boards/manifests/picocalc.toml), since this is a shared bus. See the
+     * .c file's header comment.
+     */
     uint8_t i2c_index;
-    uint8_t sda_pin;
-    uint8_t scl_pin;
     uint8_t address;
-    uint32_t speed_hz;
 } picocalc_kbd_config_t;
 
 typedef struct {

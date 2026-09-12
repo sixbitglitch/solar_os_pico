@@ -217,3 +217,203 @@ esp_err_t solar_os_board_display_init(solar_os_board_display_t *display)
 
     return ESP_OK;
 }
+
+/*
+ * The rest of the solar_os_board_display.h contract, below.
+ *
+ * On ESP32 boards these are provided once, generically, by
+ * src/board/solar_os_board_display_expansion.c, because a display there is a
+ * pluggable expansion module: solar_os_board_display_init() above is instead
+ * a *getter* that copies whichever display an expansion driver most recently
+ * registered via solar_os_board_display_register_primary(). This board's
+ * ILI9488 is fixed hardware, soldered to the mainboard like the keyboard -
+ * the same reason solar_os_board_battery_adc.c and
+ * solar_os_board_storage_sd.c implement their contracts directly rather than
+ * through a registry - so solar_os_board_display_init() above does the real
+ * bring-up itself and board_display_expansion.c is not built for this board
+ * (see boards/drivers/display_ili9488_picocalc.cmake: including both is a
+ * duplicate-symbol link error, since both define
+ * solar_os_board_display_init()).
+ *
+ * Every function below, however, is a pure dispatch through *display (or a
+ * plain field read) with no dependency on that registry, so it is copied
+ * here verbatim rather than reinvented: same contract, same behaviour, one
+ * fewer file linked for a board that does not need the indirection.
+ */
+
+esp_err_t solar_os_board_display_runtime_ready(solar_os_board_display_t *display)
+{
+    return display != NULL && display->ops != NULL && display->ops->runtime_ready != NULL ?
+        display->ops->runtime_ready(display) : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t solar_os_board_display_resume(solar_os_board_display_t *display)
+{
+    return display != NULL && display->ops != NULL && display->ops->resume != NULL ?
+        display->ops->resume(display) : ESP_ERR_INVALID_STATE;
+}
+
+void solar_os_board_display_deinit(solar_os_board_display_t *display)
+{
+    if (display != NULL && display->ops != NULL && display->ops->deinit != NULL) {
+        display->ops->deinit(display);
+    }
+}
+
+u8g2_t *solar_os_board_display_u8g2(solar_os_board_display_t *display)
+{
+    return display != NULL ? display->u8g2 : NULL;
+}
+
+const char *solar_os_board_display_driver_name(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->driver_name != NULL ? display->driver_name : "unknown";
+}
+
+const char *solar_os_board_display_controller(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->controller != NULL ? display->controller : "unknown";
+}
+
+uint16_t solar_os_board_display_width(const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->width : 0;
+}
+
+uint16_t solar_os_board_display_height(const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->height : 0;
+}
+
+bool solar_os_board_display_ready(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->ready;
+}
+
+uint32_t solar_os_board_display_surface_formats(
+    const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->surface_formats : 0U;
+}
+
+uint32_t solar_os_board_display_frame_formats(
+    const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->frame_formats : 0U;
+}
+
+uint16_t solar_os_board_display_preferred_stream_fps(
+    const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->preferred_stream_fps : 0U;
+}
+
+uint32_t solar_os_board_display_max_stream_pixels_per_second(
+    const solar_os_board_display_t *display)
+{
+    return display != NULL ? display->max_stream_pixels_per_second : 0U;
+}
+
+bool solar_os_board_display_brightness_supported(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->brightness_supported != NULL &&
+        display->ops->brightness_supported(display);
+}
+
+esp_err_t solar_os_board_display_get_brightness(const solar_os_board_display_t *display,
+                                                uint8_t *percent)
+{
+    if (percent == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return display != NULL && display->ops != NULL && display->ops->get_brightness != NULL ?
+        display->ops->get_brightness(display, percent) : ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_set_brightness(solar_os_board_display_t *display,
+                                                uint8_t percent)
+{
+    return display != NULL && display->ops != NULL && display->ops->set_brightness != NULL ?
+        display->ops->set_brightness(display, percent) : ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_set_colors(solar_os_board_display_t *display,
+                                            uint32_t foreground_rgb888,
+                                            uint32_t background_rgb888)
+{
+    return display != NULL && display->ops != NULL && display->ops->set_colors != NULL ?
+        display->ops->set_colors(display, foreground_rgb888, background_rgb888) : ESP_OK;
+}
+
+const char *solar_os_board_display_controller_mode(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->ops != NULL && display->ops->controller_mode != NULL ?
+        display->ops->controller_mode(display) : NULL;
+}
+
+const char *solar_os_board_display_controller_mode_values(const solar_os_board_display_t *display)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->controller_mode_values != NULL ?
+        display->ops->controller_mode_values(display) : NULL;
+}
+
+esp_err_t solar_os_board_display_set_controller_mode(solar_os_board_display_t *display,
+                                                     const char *mode)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->set_controller_mode != NULL ?
+        display->ops->set_controller_mode(display, mode) : ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_set_high_refresh_override(
+    solar_os_board_display_t *display,
+    bool enabled,
+    uint16_t hz_tenths)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->set_high_refresh_override != NULL ?
+        display->ops->set_high_refresh_override(display, enabled, hz_tenths) :
+        ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_present_mono_xbm(solar_os_board_display_t *display,
+                                                  const uint8_t *bitmap,
+                                                  size_t bitmap_size,
+                                                  uint16_t x,
+                                                  uint16_t y,
+                                                  uint16_t width,
+                                                  uint16_t height,
+                                                  uint16_t stride,
+                                                  bool palette_inverted)
+{
+    return display != NULL && display->ops != NULL && display->ops->present_mono_xbm != NULL ?
+        display->ops->present_mono_xbm(display,
+                                       bitmap,
+                                       bitmap_size,
+                                       x,
+                                       y,
+                                       width,
+                                       height,
+                                       stride,
+                                       palette_inverted) : ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_present_surface(
+    solar_os_board_display_t *display,
+    const solar_os_display_surface_t *surface)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->present_surface != NULL ?
+        display->ops->present_surface(display, surface) : ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t solar_os_board_display_present_frame(
+    solar_os_board_display_t *display,
+    const solar_os_display_raster_t *frame)
+{
+    return display != NULL && display->ops != NULL &&
+        display->ops->present_frame != NULL ?
+        display->ops->present_frame(display, frame) : ESP_ERR_NOT_SUPPORTED;
+}

@@ -6,6 +6,21 @@
  * Everything here is a blocking, timeout-bounded I2C exchange. The
  * co-processor is slow (10 kHz bus, and it needs time between the register
  * write and the data read), so callers must be tasks, never ISRs.
+ *
+ * I2C1 is a SHARED bus (see boards/manifests/picocalc.toml's "i2c1" entry,
+ * sharing = "shared"): this same physical link also carries the LCD
+ * backlight (picocalc_kbd_set_lcd_backlight, called from the display driver)
+ * and the battery fuel gauge (picocalc_kbd_read_battery, called from the
+ * battery driver), and generic "i2c"/expansion-device shell commands can
+ * reach it too via src/drivers/i2c_bus.c. The peripheral itself (i2c_init,
+ * pin muxing) is brought up exactly once by the generic bus layer
+ * (solar_os_buses.c, via solar_os_bus_acquire()/i2c_bus_start_config()) -
+ * this file only ever calls i2c_bus_lock()/i2c_bus_unlock() around each
+ * exchange, the same static mutex src/drivers/i2c_bus.c's own
+ * i2c_bus_transmit_handle()/i2c_bus_receive_handle() take internally. That
+ * is what keeps a concurrent generic I2C transaction from landing in the
+ * middle of this driver's write-then-16ms-sleep-then-read sequence (or vice
+ * versa) and getting back the co-processor's reply to the wrong command.
  */
 
 #include "picocalc_keyboard.h"
@@ -15,6 +30,7 @@
 #include "esp_log.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
+#include "i2c_bus.h"
 #include "pico/stdlib.h"
 
 static const char *TAG = "picocalc-kbd";
@@ -68,6 +84,14 @@ static esp_err_t picocalc_kbd_transfer(uint8_t reg,
         command_len = 2;
     }
 
+    /*
+     * Held across the whole write-sleep-read exchange, not just each half:
+     * see the file header comment. i2c_bus_lock()/unlock() take the same
+     * mutex src/drivers/i2c_bus.c uses internally, so a generic caller going
+     * through that file blocks here rather than interleaving.
+     */
+    i2c_bus_lock();
+
     int result = i2c_write_timeout_us(kbd.i2c,
                                       kbd.address,
                                       command,
@@ -75,6 +99,7 @@ static esp_err_t picocalc_kbd_transfer(uint8_t reg,
                                       false,
                                       PICOCALC_KBD_TIMEOUT_US);
     if (result < 0 || (size_t)result != command_len) {
+        i2c_bus_unlock();
         return ESP_ERR_TIMEOUT;
     }
 
@@ -88,8 +113,11 @@ static esp_err_t picocalc_kbd_transfer(uint8_t reg,
                                  false,
                                  PICOCALC_KBD_TIMEOUT_US);
     if (result < 0 || (size_t)result != sizeof(response)) {
+        i2c_bus_unlock();
         return ESP_ERR_TIMEOUT;
     }
+
+    i2c_bus_unlock();
 
     if (out_low != NULL) {
         *out_low = response[0];
@@ -119,30 +147,17 @@ esp_err_t picocalc_kbd_init(const picocalc_kbd_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /*
+     * The peripheral itself (i2c_init, pin muxing, the 10 kHz clamp - the
+     * vendor documents that as this co-processor's ceiling) is brought up
+     * exactly once by the generic bus layer, driven by
+     * boards/manifests/picocalc.toml's "i2c1" entry: see
+     * solar_os_picocalc_keyboard_attach(), which calls solar_os_bus_acquire()
+     * before this function. This file only ever locks and transfers.
+     */
     memset(&kbd, 0, sizeof(kbd));
     kbd.i2c = (config->i2c_index == 0) ? i2c0 : i2c1;
     kbd.address = config->address != 0 ? config->address : PICOCALC_KBD_I2C_ADDRESS;
-
-    uint32_t speed = config->speed_hz != 0 ? config->speed_hz : PICOCALC_KBD_I2C_SPEED_HZ;
-    if (speed > PICOCALC_KBD_I2C_SPEED_HZ) {
-        /*
-         * Clamp rather than obey. The vendor documents 10 kHz as the ceiling
-         * for this co-processor; letting a board manifest raise it would turn
-         * a configuration mistake into intermittent, hard-to-diagnose key loss.
-         */
-        ESP_LOGW(TAG,
-                 "requested %lu Hz exceeds the co-processor's %u Hz limit; clamping",
-                 (unsigned long)speed,
-                 (unsigned)PICOCALC_KBD_I2C_SPEED_HZ);
-        speed = PICOCALC_KBD_I2C_SPEED_HZ;
-    }
-
-    i2c_init(kbd.i2c, speed);
-    gpio_set_function(config->sda_pin, GPIO_FUNC_I2C);
-    gpio_set_function(config->scl_pin, GPIO_FUNC_I2C);
-    gpio_pull_up(config->sda_pin);
-    gpio_pull_up(config->scl_pin);
-
     kbd.ready = true;
 
     /* Probe: REG_VER answers {0, BIOSVERSION}. A co-processor that is absent
@@ -156,19 +171,22 @@ esp_err_t picocalc_kbd_init(const picocalc_kbd_config_t *config)
     }
 
     ESP_LOGI(TAG,
-             "co-processor at 0x%02x, firmware 0x%02x, %lu Hz",
+             "co-processor at 0x%02x, firmware 0x%02x",
              kbd.address,
-             version,
-             (unsigned long)speed);
+             version);
     return ESP_OK;
 }
 
 void picocalc_kbd_deinit(void)
 {
-    if (!kbd.ready) {
-        return;
-    }
-    i2c_deinit(kbd.i2c);
+    /*
+     * Marks this driver's own state not-ready only. It must NOT call
+     * i2c_deinit(): the peripheral is shared (see the file header comment)
+     * and owned by the generic bus layer, not by this file - tearing it down
+     * here would take the display backlight and battery gauge down with it.
+     * The caller (solar_os_picocalc_keyboard_attach()'s failure paths) is
+     * responsible for releasing its own bus lease separately.
+     */
     kbd.ready = false;
 }
 

@@ -18,6 +18,7 @@
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
 #include "pico/stdlib.h"
+#include "spi_bus_pico.h"
 
 static const char *TAG = "sd-spi";
 
@@ -71,8 +72,27 @@ static sd_spi_state_t sd;
 
 /* --- Low-level SPI helpers ----------------------------------------------- */
 
+/*
+ * SPI0 is shared with the generic solar_os_buses "spi" path (see
+ * spi_bus_pico.c's file header - same bus, same GPIO17 chip-select the board
+ * manifest names for both). cs_low()/cs_high() bracket every SD transfer in
+ * this file, so taking the shared lock here - and only here - covers every
+ * real transaction without needing it at each call site individually.
+ */
 static void cs_low(void)
 {
+    solar_os_pico_spi0_lock();
+    /*
+     * Restore this card's own clock and format every time, not just at
+     * init: a generic "spi" command running on the shared bus in between
+     * two SD transfers reprograms the peripheral for its own transaction
+     * (see spi_bus_pico.c) and has no way to know what to put back
+     * afterward.
+     */
+    spi_set_format(sd.spi, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+    if (sd.config.transfer_hz != 0) {
+        spi_set_baudrate(sd.spi, sd.config.transfer_hz);
+    }
     gpio_put(sd.config.cs_pin, 0);
 }
 
@@ -83,6 +103,7 @@ static void cs_high(void)
      * DO, and without this a following transaction can see a stale bit. */
     uint8_t ff = 0xFF;
     spi_write_blocking(sd.spi, &ff, 1);
+    solar_os_pico_spi0_unlock();
 }
 
 static uint8_t xfer(uint8_t value)
