@@ -24,3 +24,6 @@ tests/__pycache__/
 tests/host/ble_nimble_test
 tests/host/ble_multi_peer_test
 tests/host/ble_hid_test
+
+# pico-sdk build tree for targets/picocalc
+build/
