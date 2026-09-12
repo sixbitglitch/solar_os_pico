@@ -5,9 +5,10 @@
  * organised very differently (8 slices x 2 channels, each slice with its own
  * wrap and divider, rather than ESP-IDF's timer/channel/speed-mode triple).
  *
- * Only the enums and config structs are provided, which is all the shared
- * sources need to describe a PWM binding. A real RP2350 PWM backend
- * (drivers/pico/pwm_port_pico.c) is outstanding - see doc/ports/picocalc.md.
+ * The functions below are backed by solar_os_compat_pico_periph.c, which maps
+ * LEDC channels onto RP2350 hardware_pwm slices. drivers/pwm_port.c (the
+ * original, unmodified ESP-IDF-facing solar_os_pwm backend) builds against
+ * this shim as-is.
  */
 #pragma once
 
@@ -68,6 +69,15 @@ typedef struct {
     ledc_clk_cfg_t clk_cfg;
 } ledc_timer_config_t;
 
+/* Newer ESP-IDF versions added a sleep-retention mode to the channel config.
+ * RP2350 has no equivalent low-power PWM retention state, so the value is
+ * accepted (for source compatibility with callers written against that API)
+ * and ignored. */
+typedef enum {
+    LEDC_SLEEP_MODE_NO_ALIVE_NO_PD = 0,
+    LEDC_SLEEP_MODE_KEEP_ALIVE,
+} ledc_sleep_mode_t;
+
 typedef struct {
     int gpio_num;
     ledc_mode_t speed_mode;
@@ -76,6 +86,7 @@ typedef struct {
     ledc_timer_t timer_sel;
     uint32_t duty;
     int hpoint;
+    ledc_sleep_mode_t sleep_mode;
 } ledc_channel_config_t;
 
 esp_err_t ledc_timer_config(const ledc_timer_config_t *config);

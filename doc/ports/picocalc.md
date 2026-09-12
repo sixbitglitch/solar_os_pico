@@ -365,6 +365,11 @@ already satisfied and the file adds nothing.
 | POSIX filesystem | ESP-IDF VFS | `src/port/pico/compat/solar_os_compat_pico_vfs.c` |
 | Build system | root `CMakeLists.txt` + ESP-IDF `project.cmake` | `targets/picocalc/CMakeLists.txt` + pico-sdk |
 | Board driver fragments | `boards/drivers/*_esp_idf.cmake`, `display_ili9341.cmake`, `storage_sdspi.cmake`, `battery_adc.cmake` | `boards/drivers/{gpio,i2c,spi,uart,adc,pwm}_pico.cmake`, `display_ili9488_picocalc.cmake`, `storage_sd_spi_pico.cmake`, `battery_picocalc.cmake` |
+| GPIO service backend | `src/drivers/gpio_port.c` | **same file, unmodified** — compiles as-is against the compat shim |
+| PWM service backend | `src/drivers/pwm_port.c` | **same file, unmodified** — compiles as-is against the LEDC-over-hardware_pwm shim |
+| ADC service backend | `src/drivers/adc_port.c` (ESP-IDF `esp_adc` oneshot + calibration) | `src/drivers/pico/adc_port_pico.c` — new, direct `hardware_adc` |
+| UART service backend | `src/drivers/uart_port.c` (ESP-IDF ring-buffered UART driver) | `src/drivers/pico/uart_port_pico.c` — new, direct `hardware_uart` with an IRQ-driven RX ring buffer; autobaud not implemented |
+| Generic I2C/SPI bus backend (`io`/`i2c`/`spi` shell commands) | `src/drivers/i2c_bus.c`, `src/drivers/spi_bus.c` | **not wired up** — deferred, see [§7.2](#72-what-remains-the-generic-i2cspi-bus-backend) |
 | Board manifest | `boards/manifests/t_lora_pager.toml` (closest analogue) | `boards/manifests/picocalc.toml` |
 | Flavour | `flavors/core.toml` | `flavors/picocalc-core.toml` |
 
@@ -464,37 +469,65 @@ document.** It means "compiles" and, where stated, "links" — never "works".
 | `solar_os_fatfs` — FatFs + diskio glue | **compiles clean** |
 | `solar_os_u8g2` — renderer + 29 font faces | **compiles clean** |
 | `solar_os_cjson`, `solar_os_miniz` | **compiles clean** |
-| `picocalc-core` — full firmware | **all 95 shared sources compile; does not link yet** |
+| `picocalc-core` — full firmware | **all 95 shared sources compile; links except for the general I2C/SPI bus backend — see §7.2** |
 
 The default build (`cmake --build build/picocalc`) builds everything except the
 firmware executable, so a normal build proves the drivers and RTOS layer. The
 firmware is behind `-DSOLAR_OS_PICOCALC_FULL_FIRMWARE=ON`.
 
-### 7.2 The next blocking error
+Since the state first recorded in this section, a second pass closed every
+gap except the deliberately-deferred generic I2C/SPI bus backend:
+`main.c` (the real ESP32 entry point, `app_main()`) turned out to be linked
+into every build already rather than excluded, and its few ESP32-only calls
+(deep-sleep wake sources, the KEY button's GPIO ISR) are now covered by
+honest "unsupported" shims in the same style as the rest of this layer;
+`gpio_port.c` and `pwm_port.c` (the original, unmodified ESP-IDF-facing
+files) turned out to compile against the existing compat shim with only two
+small additive shim fixes (`GPIO_IS_VALID_GPIO`/`GPIO_IS_VALID_OUTPUT_GPIO`
+macros, and a `sleep_mode` field on the LEDC channel-config shim struct) —
+no changes to either original file; `drivers/pico/adc_port_pico.c` and
+`drivers/pico/uart_port_pico.c` are new, real RP2350 backends (hardware_adc
+and hardware_uart with an IRQ-driven RX ring buffer, respectively — UART
+autobaud is explicitly not implemented, see that file's header comment);
+`flash_storage_*`/`solar_os_ramfs_*`/`solar_os_cdc_init`/
+`solar_os_nvs_backup_*` (the four deliberately-deferred subsystems) needed
+thin "not available" stubs because other already-ported files call their
+public API directly, not just their own missing translation units; and a
+cluster of FreeRTOS-Kernel/ESP-IDF API mismatches
+(`taskENTER_CRITICAL`/`portENTER_CRITICAL` arity, `xPortInIsrContext`,
+`xSemaphoreCreateMutexStatic`, `nvs_find_key`, `ESP_ERROR_CHECK`'s header
+placement) were genuine shim bugs, not missing subsystems, and are fixed in
+`src/port/pico/compat/`.
 
-The firmware compiles completely and fails at **link** with **61 undefined
-symbols**, in these groups — no unexplained residue:
+### 7.2 What remains: the generic I2C/SPI bus backend
+
+The firmware now links except for 12 symbols, all in one deliberately
+deferred group:
 
 | Group | Count | What is missing |
 | --- | --- | --- |
-| `uart_port_*` | 9 | RP2350 backend for the UART service (`drivers/pico/uart_port_pico.c`) |
-| `i2c_bus_*` | 8 | RP2350 backend for `solar_os_buses` I2C (`drivers/pico/i2c_bus_pico.c`) |
-| `flash_storage_*` | 9 | `drivers/flash_storage.c`, excluded by name — needs a flash/partition abstraction |
-| `spi_bus_*`, `spi_device_polling_transmit` | 5 | RP2350 backend for `solar_os_buses` SPI |
-| `gpio_port_*`, `gpio_install_isr_service`, `gpio_isr_handler_add` | 5 | RP2350 backend for the GPIO service, plus a GPIO ISR dispatcher |
-| `pwm_port_*` | 4 | RP2350 backend for the PWM service (`driver/ledc.h` exists; this is the SolarOS-side wrapper) |
-| `adc_port_*` | 3 | RP2350 backend for the ADC service |
-| `solar_os_ramfs_*` | 7 | `services/solar_os_ramfs.c`, excluded by name — needs a VFS registration hook |
-| `solar_os_nvs_backup_*`, `solar_os_cdc_init` | 3 | excluded by name |
-| `portENTER_CRITICAL`, `portEXIT_CRITICAL`, `taskENTER_CRITICAL`, `taskEXIT_CRITICAL` | 4 | referenced as *functions* from a file where the shim's macro form is not visible; needs one include ordering fix |
-| `xPortInIsrContext`, `xSemaphoreCreateMutexStatic`, `nvs_find_key`, `ESP_ERROR_CHECK` | 4 | small shim additions |
+| `i2c_bus_*` | 7 | RP2350 backend for `solar_os_buses`' generic I2C (`drivers/pico/i2c_bus_pico.c`, not yet written) |
+| `spi_bus_*`, `spi_device_polling_transmit` | 5 | RP2350 backend for `solar_os_buses`' generic SPI (`drivers/pico/spi_bus_pico.c`, not yet written) |
 
-**To continue**, the single highest-value next step is the bus/port backend
-tranche — `drivers/pico/{i2c_bus,spi_bus,gpio_port,uart_port,pwm_port,adc_port}_pico.c`
-against the interfaces in `src/drivers/{i2c_bus,spi_bus,gpio_port,uart_port,pwm_port,adc_port}.h`.
-That is 34 of the 61 symbols and would leave only the four
-explicitly-excluded files plus ~11 small shim gaps. The exact command to see the
-current list:
+This is deferred on purpose, not for lack of time: the PicoCalc's I2C1 bus is
+already owned directly by `drivers/pico/picocalc_keyboard.c` (calling
+`hardware_i2c` itself, bypassing the ESP-IDF-shaped `i2c_bus.h`/
+`i2c_master.h` shim's own bus-handle bookkeeping entirely), and SPI0 is
+already owned directly by `drivers/pico/sd_spi_pico.c`. Wiring the generic
+`i2c_bus.c`/`spi_bus.c` (the original, unmodified ESP-IDF-facing files — both
+were confirmed to compile cleanly against the existing compat shim in
+isolation) onto those same physical peripherals, so that the `io`/`i2c`/`spi`
+expansion shell commands work, would let a second, independent caller
+re-initialize a peripheral out from under the keyboard or the SD card
+mid-transfer, since the shim's own bus-handle tracking has no visibility into
+either driver's direct hardware_i2c/hardware_spi calls. That is a real
+arbitration design the port has not done yet (a shared claim/lock between
+each dedicated driver and the generic bus layer), not a missing line of code,
+and it should not be wired up speculatively without a way to test it against
+real contention. The `io`, `i2c`, and `spi` shell commands are therefore not
+functional in this pass — see the deferred list below.
+
+The exact command to reproduce this:
 
 ```sh
 cmake -S targets/picocalc -B build/picocalc -DSOLAR_OS_PICOCALC_FULL_FIRMWARE=ON -G Ninja
@@ -575,7 +608,7 @@ BLE as a feature even though the CYW43439 is physically present.
 | --- | --- | --- |
 | **NVS flash persistence** | Settings work within a boot, reset to defaults on reboot | A wear-levelled region carved out of the 16 MB flash below the firmware, via pico-sdk `hardware_flash`; replaces the RAM store in `solar_os_compat_pico.c` |
 | **Partition table / OTA** | `esp_partition_*` finds nothing, OTA cannot start | Same flash-layout work; note pico-sdk's own update model is the UF2 bootrom, a different design |
-| **Bus/port service backends** (i2c, spi, uart, gpio, pwm, adc) | The `i2c`/`spi`/`uart`/`gpio`/`pwm`/`adc` shell commands and arbitrary expansion devices have no backend. This is what blocks the link. | `src/drivers/pico/*_pico.c` against the existing `src/drivers/*.h` interfaces |
+| **Generic I2C/SPI bus backend** (`solar_os_buses`, and the `io`/`i2c`/`spi` shell commands / arbitrary expansion devices) | No backend — `i2c_bus.c`/`spi_bus.c` are not wired up. This is what blocks the link. `gpio`/`pwm`/`adc`/`uart` are NOT in this state: `gpio_port.c` and `pwm_port.c` build unmodified against the compat shim, and `adc_port_pico.c`/`uart_port_pico.c` are real new RP2350 backends. | Needs a shared claim/lock between this generic layer and the drivers that already own the physical I2C1/SPI0 peripherals directly (`picocalc_keyboard.c`, `sd_spi_pico.c`) — see [§7.2](#72-what-remains-the-generic-i2cspi-bus-backend) for why this was not wired up speculatively |
 | **`drivers/flash_storage.c`** | No internal-flash filesystem | Excluded by name in the CMake `SOLAR_OS_DEFERRED_SRCS` list |
 | **`services/solar_os_ramfs.c`** | No RAM filesystem | Needs a VFS mount-registration hook in the new VFS layer |
 | **`services/solar_os_cdc.c`** | USB console goes through pico-sdk's `pico_stdio_usb` instead | pico-sdk's stdio model differs from ESP-IDF's USB-serial-JTAG driver |

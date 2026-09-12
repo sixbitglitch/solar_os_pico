@@ -270,6 +270,7 @@ add_library(solar_os_compat STATIC
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_gpio.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_periph.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_vfs.c"
+    "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_deferred_stubs.c"
 )
 target_include_directories(solar_os_compat PUBLIC ${SOLAR_OS_INCLUDE_DIRS})
 target_compile_options(solar_os_compat PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
@@ -339,6 +340,12 @@ set(SOLAR_OS_DEFERRED_SRCS
     # USB/JTAG console: pico-sdk stdio covers this differently.
     "services/solar_os_cdc.c"
 )
+# main.c defines app_main() - the actual boot sequence (board bring-up,
+# service init, shell/jobs start) that src/port/pico/solar_os_pico_main.c
+# calls into as its entry point. It is NOT deferred: its few ESP32-only calls
+# (deep sleep wake sources, the KEY button's GPIO ISR) are covered by
+# compatibility shims that honestly report "unsupported" rather than
+# reimplementing deep sleep or GPIO interrupts - see doc/ports/picocalc.md.
 
 set(SOLAR_OS_CORE_SRC_PATHS "")
 set(SOLAR_OS_EXCLUDED_SRCS "")

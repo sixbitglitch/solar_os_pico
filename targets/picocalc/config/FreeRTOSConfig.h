@@ -46,7 +46,13 @@
 #define configSTACK_DEPTH_TYPE                  uint32_t
 #define configMESSAGE_BUFFER_LENGTH_TYPE        size_t
 
-#define configSUPPORT_STATIC_ALLOCATION         0
+/* solar_os_task.c calls xSemaphoreCreateMutexStatic() for its admission
+ * mutex. configKERNEL_PROVIDED_STATIC_MEMORY makes the kernel supply its own
+ * vApplicationGetIdleTaskMemory()/vApplicationGetPassiveIdleTaskMemory()/
+ * vApplicationGetTimerTaskMemory() (tasks.c), so enabling static allocation
+ * does not also require writing those three callbacks by hand. */
+#define configSUPPORT_STATIC_ALLOCATION         1
+#define configKERNEL_PROVIDED_STATIC_MEMORY     1
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 /* Backs heap_caps_* in the compatibility shim. See the note above before
  * changing: task admission decisions are made against this heap's free size. */

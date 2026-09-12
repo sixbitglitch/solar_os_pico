@@ -65,3 +65,39 @@ const char *esp_err_to_name(esp_err_t code);
 #ifdef __cplusplus
 }
 #endif
+
+/* ESP_ERROR_CHECK lives here rather than in esp_check.h to match upstream
+ * ESP-IDF's own layering: it is defined in esp_err.h there too, so any file
+ * that includes only esp_err.h (or esp_log.h, which reaches this file via
+ * esp_timer.h) gets it without needing a separate #include added - main.c is
+ * exactly such a file. Include order below is deliberate: esp_log.h is
+ * pulled in only after esp_err_t and the ESP_ERR_* codes above are already
+ * defined, so the circular esp_log.h -> esp_timer.h -> esp_err.h include
+ * resolves cleanly via the pragma-once guards. */
+#include "esp_log.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ESP-IDF aborts on failure here. Doing the same on RP2350 would reboot the
+ * device with no diagnostics, so this logs loudly and continues. Call sites in
+ * this tree use it for init steps that are already tolerant of failure. */
+#define ESP_ERROR_CHECK(x)                                                    \
+    do {                                                                      \
+        esp_err_t err_rc_ = (x);                                             \
+        if (err_rc_ != ESP_OK) {                                             \
+            ESP_LOGE("check",                                                \
+                     "%s:%d %s failed: %s",                                  \
+                     __FILE__,                                               \
+                     __LINE__,                                               \
+                     #x,                                                     \
+                     esp_err_to_name(err_rc_));                              \
+        }                                                                     \
+    } while (0)
+
+#define ESP_ERROR_CHECK_WITHOUT_ABORT(x) (x)
+
+#ifdef __cplusplus
+}
+#endif

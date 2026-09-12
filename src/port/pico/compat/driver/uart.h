@@ -34,11 +34,20 @@ typedef enum {
     UART_STOP_BITS_2,
 } uart_stop_bits_t;
 
+/* Guarded: drivers/pico/uart_port_pico.c includes both this header (for the
+ * ESP-IDF-shaped enums shell/solar_os_shell_expansion.c needs) and pico-sdk's
+ * real hardware/uart.h (for the actual peripheral calls), which defines its
+ * own same-named uart_parity_t with UART_PARITY_NONE/EVEN/ODD. Skipping ours
+ * when that header is already present avoids a redefinition error; the two
+ * enums agree on EVEN/ODD numerically and no shared source needs
+ * UART_PARITY_DISABLE in a TU that also touches real hardware_uart. */
+#ifndef _HARDWARE_UART_H
 typedef enum {
     UART_PARITY_DISABLE = 0,
     UART_PARITY_EVEN = 2,
     UART_PARITY_ODD = 3,
 } uart_parity_t;
+#endif
 
 typedef enum {
     UART_HW_FLOWCTRL_DISABLE = 0,

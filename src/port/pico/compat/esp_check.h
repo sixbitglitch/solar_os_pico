@@ -70,20 +70,7 @@
         }                                                                     \
     } while (0)
 
-/* ESP-IDF aborts on failure here. Doing the same on RP2350 would reboot the
- * device with no diagnostics, so this logs loudly and continues. Call sites in
- * this tree use it for init steps that are already tolerant of failure. */
-#define ESP_ERROR_CHECK(x)                                                    \
-    do {                                                                      \
-        esp_err_t err_rc_ = (x);                                              \
-        if (err_rc_ != ESP_OK) {                                              \
-            ESP_LOGE("check",                                                 \
-                     "%s:%d %s failed: %s",                                   \
-                     __FILE__,                                                \
-                     __LINE__,                                                \
-                     #x,                                                      \
-                     esp_err_to_name(err_rc_));                               \
-        }                                                                     \
-    } while (0)
-
-#define ESP_ERROR_CHECK_WITHOUT_ABORT(x) (x)
+/* ESP_ERROR_CHECK / ESP_ERROR_CHECK_WITHOUT_ABORT live in esp_err.h, not here:
+ * that matches upstream ESP-IDF's own layering, and it means a file that only
+ * includes esp_log.h or esp_err.h (as several shared sources do) still gets
+ * them without needing a new #include added. */

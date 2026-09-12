@@ -622,6 +622,24 @@ esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *out_value, si
     return compat_nvs_load_variable(handle, key, NVS_TYPE_BLOB, out_value, length);
 }
 
+esp_err_t nvs_find_key(nvs_handle_t handle, const char *key, nvs_type_t *out_type)
+{
+    if (out_type == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t namespace_index = 0;
+    const esp_err_t err = compat_nvs_namespace_of(handle, &namespace_index);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const compat_nvs_entry_t *entry = compat_nvs_find(namespace_index, key);
+    if (entry == NULL) {
+        return ESP_ERR_NVS_NOT_FOUND;
+    }
+    *out_type = entry->type;
+    return ESP_OK;
+}
+
 esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key)
 {
     uint8_t namespace_index = 0;

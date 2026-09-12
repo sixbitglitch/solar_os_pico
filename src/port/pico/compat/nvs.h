@@ -103,6 +103,7 @@ esp_err_t nvs_get_i64(nvs_handle_t handle, const char *key, int64_t *out_value);
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *key, char *out_value, size_t *length);
 esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *out_value, size_t *length);
 
+esp_err_t nvs_find_key(nvs_handle_t handle, const char *key, nvs_type_t *out_type);
 esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key);
 esp_err_t nvs_erase_all(nvs_handle_t handle);
 

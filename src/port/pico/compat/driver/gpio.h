@@ -13,6 +13,7 @@
  */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -121,6 +122,25 @@ esp_err_t gpio_pullup_en(gpio_num_t pin);
 esp_err_t gpio_pullup_dis(gpio_num_t pin);
 esp_err_t gpio_pulldown_en(gpio_num_t pin);
 esp_err_t gpio_pulldown_dis(gpio_num_t pin);
+
+/* ESP-IDF's shared GPIO ISR service. Nothing in the picocalc-core flavour
+ * registers a GPIO edge interrupt (see solar_os_compat_pico_gpio.c), so these
+ * report "unavailable" rather than silently accepting a handler that will
+ * never fire - callers here already treat a non-ESP_OK result as "no
+ * interrupt source" and fall back accordingly. */
+static inline esp_err_t gpio_install_isr_service(int flags)
+{ (void)flags; return ESP_ERR_NOT_SUPPORTED; }
+
+static inline esp_err_t gpio_isr_handler_add(gpio_num_t pin,
+                                             void (*handler)(void *),
+                                             void *arg)
+{ (void)pin; (void)handler; (void)arg; return ESP_ERR_NOT_SUPPORTED; }
+
+/* RP2350B exposes GPIO0-47 as ordinary bidirectional digital pins (no
+ * input-only pins the way some ESP32 variants have), so "valid" and "valid
+ * output" collapse to the same range check. */
+#define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) < GPIO_NUM_MAX)
+#define GPIO_IS_VALID_OUTPUT_GPIO(pin) GPIO_IS_VALID_GPIO(pin)
 
 #ifdef __cplusplus
 }

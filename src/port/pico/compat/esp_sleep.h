@@ -76,6 +76,18 @@ static inline esp_err_t esp_sleep_enable_ext1_wakeup(uint64_t mask,
                                                      esp_sleep_ext1_wakeup_mode_t mode)
 { (void)mask; (void)mode; return ESP_ERR_NOT_SUPPORTED; }
 
+/* Newer ESP-IDF versions split ext1 wake into a GPIO-mask ("_io") form. Same
+ * not-implemented contract as the rest of this header. */
+static inline esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t mask,
+                                                        esp_sleep_ext1_wakeup_mode_t mode)
+{ (void)mask; (void)mode; return ESP_ERR_NOT_SUPPORTED; }
+
+static inline esp_err_t esp_sleep_disable_ext1_wakeup_io(uint64_t mask)
+{ (void)mask; return ESP_ERR_NOT_SUPPORTED; }
+
+static inline uint64_t esp_sleep_get_ext1_wakeup_status(void)
+{ return 0; }
+
 static inline esp_err_t esp_sleep_enable_ext0_wakeup(int pin, int level)
 { (void)pin; (void)level; return ESP_ERR_NOT_SUPPORTED; }
 
