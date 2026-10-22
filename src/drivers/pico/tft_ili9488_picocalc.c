@@ -1,12 +1,15 @@
 /*
- * tft_ili9488_picocalc.c - ILI9488 320x320 panel driver for the PicoCalc.
+ * tft_ili9488_picocalc.c - PicoCalc 320x320 colour panel driver.
  *
- * See tft_ili9488_picocalc.h for the two ways this deliberately differs from
- * the ILI9341 reference driver (18bpp wire format, co-processor backlight).
+ * Current PicoCalc units ship an ST7365P driven in RGB565 (COLMOD 0x55), which
+ * is what jeffory/PicOS and other on-device ports use. Older reference code
+ * treated the panel as ILI9488 in 18bpp (COLMOD 0x66). Sending 3 bytes/pixel
+ * to a panel expecting 2 produces a black screen with sparse random pixels -
+ * exactly the failure mode observed on hardware when this driver still forced
+ * 0x66.
  *
- * Never run on hardware. The init sequence is transcribed from clockworkpi's
- * own reference driver, but nothing about SPI timing, refresh behaviour or
- * the panel's actual window offsets has been observed.
+ * Wire format is selected by config.colmod. Pixel packing always starts from
+ * RGB565 in the SolarOS pipeline; conversion to the wire format happens here.
  */
 
 #include "tft_ili9488_picocalc.h"
@@ -22,24 +25,18 @@
 
 static const char *TAG = "ili9488";
 
-/* --- ILI9488 commands ---------------------------------------------------- */
 #define ILI9488_SWRESET 0x01
 #define ILI9488_SLPOUT  0x11
 #define ILI9488_INVON   0x21
+#define ILI9488_INVOFF  0x20
 #define ILI9488_DISPON  0x29
 #define ILI9488_CASET   0x2A
 #define ILI9488_PASET   0x2B
 #define ILI9488_RAMWR   0x2C
 #define ILI9488_MADCTL  0x36
 #define ILI9488_COLMOD  0x3A
+#define ILI9488_RDDID   0x04
 
-/*
- * 0x66 = 18 bits/pixel. This is NOT a preference: ILI9488's 4-wire serial
- * interface does not implement the 16bpp memory-write format at all.
- */
-#define ILI9488_COLMOD_18BPP 0x66
-
-/* u8g2 tiles are 8x8 monochrome. */
 #define TILE_PIXELS 8U
 
 static tft_ili9488_t *active_display;
@@ -58,11 +55,7 @@ static uint16_t rgb888_to_rgb565(uint32_t rgb888)
 
 /*
  * Expand one RGB565 pixel into the three bytes ILI9488 expects in 18bpp mode.
- *
- * The controller takes the top 6 bits of each byte. RGB565's 5-bit red/blue
- * are widened to 6 bits by replicating the most significant bit into the new
- * low bit, which keeps full white at full white (a plain left-shift would make
- * 0x1F map to 0x3E, so white would read slightly grey).
+ * Top 6 bits of each byte are significant.
  */
 static inline void rgb565_to_rgb666(uint16_t value, uint8_t *out)
 {
@@ -78,7 +71,21 @@ static inline void rgb565_to_rgb666(uint16_t value, uint8_t *out)
     out[2] = (uint8_t)(b6 << 2);
 }
 
-/* --- SPI plumbing -------------------------------------------------------- */
+/* ST7365P / RGB565 over SPI wants big-endian 16-bit pixels. */
+static inline void rgb565_to_be16(uint16_t value, uint8_t *out)
+{
+    out[0] = (uint8_t)(value >> 8);
+    out[1] = (uint8_t)(value & 0xFFU);
+}
+
+static inline void pack_pixel(const tft_ili9488_t *display, uint16_t value, uint8_t *out)
+{
+    if (display->bytes_per_pixel == 2U) {
+        rgb565_to_be16(value, out);
+    } else {
+        rgb565_to_rgb666(value, out);
+    }
+}
 
 static void select(tft_ili9488_t *display)
 {
@@ -108,7 +115,6 @@ static void write_data_byte(tft_ili9488_t *display, uint8_t value)
     write_data(display, &value, 1);
 }
 
-/* Command followed by its parameter bytes, CS held across the pair. */
 static void write_command_data(tft_ili9488_t *display,
                                uint8_t command,
                                const uint8_t *data,
@@ -120,7 +126,6 @@ static void write_command_data(tft_ili9488_t *display,
     }
 }
 
-/* Open a GRAM window. Coordinates are inclusive on both ends. */
 static void set_window(tft_ili9488_t *display,
                        uint16_t x,
                        uint16_t y,
@@ -144,34 +149,77 @@ static void set_window(tft_ili9488_t *display,
     write_command(display, ILI9488_RAMWR);
 }
 
-/* --- Panel initialisation ------------------------------------------------ */
-
-/*
- * Transcribed from clockworkpi's pico_lcd_init(). The gamma tables and the
- * power/VCOM/frame-rate values are panel-specific and are NOT interchangeable
- * with an ILI9341 sequence, which is why they are reproduced verbatim rather
- * than adapted.
- */
 static void panel_reset(tft_ili9488_t *display)
 {
     if (display->config.reset_pin < 0) {
+        select(display);
         write_command(display, ILI9488_SWRESET);
+        deselect(display);
         sleep_ms(150);
         return;
     }
 
     const uint pin = (uint)display->config.reset_pin;
-    gpio_put(pin, 1);
-    sleep_ms(10);
+    /* Pulse low then release, matching working on-device ports. */
     gpio_put(pin, 0);
     sleep_ms(10);
     gpio_put(pin, 1);
-    /* The reference driver waits 200 ms here; the datasheet's minimum is
-     * 120 ms after reset release before the first command. */
-    sleep_ms(200);
+    sleep_ms(120);
+
+    select(display);
+    write_command(display, ILI9488_SWRESET);
+    deselect(display);
+    sleep_ms(10);
 }
 
-static void panel_init_sequence(tft_ili9488_t *display)
+/*
+ * Pulse one command (and optional params) with CS high between transactions.
+ * Matches PicOS / Picoware: they never hold CS across the SLPOUT delay.
+ */
+static void panel_cmd(tft_ili9488_t *display, uint8_t command)
+{
+    select(display);
+    write_command(display, command);
+    deselect(display);
+}
+
+static void panel_cmd_byte(tft_ili9488_t *display, uint8_t command, uint8_t value)
+{
+    select(display);
+    write_command(display, command);
+    write_data_byte(display, value);
+    deselect(display);
+}
+
+/*
+ * ST7365P / current PicoCalc path. Validated by independent on-device ports
+ * (PicOS, Picoware) against the same Pimoroni Pico Plus 2 W + PicoCalc pairing.
+ */
+static void panel_init_rgb565(tft_ili9488_t *display)
+{
+    panel_cmd_byte(display, ILI9488_COLMOD, TFT_PICOCALC_COLMOD_RGB565);
+    panel_cmd_byte(display, ILI9488_MADCTL, display->config.madctl);
+    /*
+     * PicOS/Picoware enable INVON. Some units look optically inverted with it;
+     * board manifest can force off via SOLAR_OS_BOARD_DISPLAY_INVON=0.
+     */
+#if !defined(SOLAR_OS_BOARD_DISPLAY_INVON) || SOLAR_OS_BOARD_DISPLAY_INVON
+    panel_cmd(display, ILI9488_INVON);
+#else
+    panel_cmd(display, ILI9488_INVOFF);
+#endif
+    panel_cmd_byte(display, 0xB7, 0xC6); /* Entry Mode Set */
+
+    panel_cmd(display, ILI9488_SLPOUT);
+    sleep_ms(10); /* PicOS / Picoware: >= 5 ms after SLPOUT */
+    panel_cmd(display, ILI9488_DISPON);
+}
+
+/*
+ * Legacy ILI9488 18bpp path, transcribed from clockworkpi's pico_lcd_init()
+ * #ifdef ILI9488 branch. Keep for units that still need COLMOD 0x66.
+ */
+static void panel_init_rgb666(tft_ili9488_t *display)
 {
     static const uint8_t positive_gamma[15] = {
         0x00, 0x03, 0x09, 0x08, 0x16, 0x0A, 0x3F, 0x78,
@@ -192,7 +240,7 @@ static void panel_init_sequence(tft_ili9488_t *display)
     write_command_data(display, 0xE1, negative_gamma, sizeof(negative_gamma));
     write_command_data(display, 0xC0, power_control_1, sizeof(power_control_1));
 
-    write_command(display, 0xC1); /* Power Control 2 */
+    write_command(display, 0xC1);
     write_data_byte(display, 0x41);
 
     write_command_data(display, 0xC5, vcom_control, sizeof(vcom_control));
@@ -201,24 +249,22 @@ static void panel_init_sequence(tft_ili9488_t *display)
     write_data_byte(display, display->config.madctl);
 
     write_command(display, ILI9488_COLMOD);
-    write_data_byte(display, ILI9488_COLMOD_18BPP);
+    write_data_byte(display, TFT_PICOCALC_COLMOD_RGB666);
 
-    write_command(display, 0xB0); /* Interface Mode Control */
+    write_command(display, 0xB0);
     write_data_byte(display, 0x00);
 
-    write_command(display, 0xB1); /* Frame Rate Control */
+    write_command(display, 0xB1);
     write_data_byte(display, 0xA0);
 
-    /* The reference driver enables inversion on this panel. Without it the
-     * image comes out as a photographic negative. */
     write_command(display, ILI9488_INVON);
 
-    write_command(display, 0xB4); /* Display Inversion Control */
+    write_command(display, 0xB4);
     write_data_byte(display, 0x02);
 
     write_command_data(display, 0xB6, display_function, sizeof(display_function));
 
-    write_command(display, 0xB7); /* Entry Mode Set */
+    write_command(display, 0xB7);
     write_data_byte(display, 0xC6);
 
     write_command(display, 0xE9);
@@ -234,9 +280,29 @@ static void panel_init_sequence(tft_ili9488_t *display)
     deselect(display);
 }
 
-/* --- Painting ------------------------------------------------------------ */
+static void panel_init_sequence(tft_ili9488_t *display)
+{
+    if (display->bytes_per_pixel == 2U) {
+        panel_init_rgb565(display);
+    } else {
+        panel_init_rgb666(display);
+    }
+}
 
-/* Fill a rectangle with one colour, streaming it out without a full buffer. */
+static void log_panel_id(tft_ili9488_t *display)
+{
+    uint8_t id[4] = {0};
+    select(display);
+    write_command(display, ILI9488_RDDID);
+    /* Dummy clock then three ID bytes; many panels ignore MISO - best effort. */
+    spi_read_blocking(spi_for(display), 0x00, id, sizeof(id));
+    deselect(display);
+    ESP_LOGI(TAG, "panel RDDID: %02x %02x %02x %02x (COLMOD 0x%02x, %u bpp)",
+             id[0], id[1], id[2], id[3],
+             display->config.colmod,
+             (unsigned)(display->bytes_per_pixel * 8U));
+}
+
 static esp_err_t fill_rect(tft_ili9488_t *display,
                            uint16_t x,
                            uint16_t y,
@@ -249,14 +315,13 @@ static esp_err_t fill_rect(tft_ili9488_t *display,
     }
 
     uint8_t pixel[3];
-    rgb565_to_rgb666(colour, pixel);
+    pack_pixel(display, colour, pixel);
+    const size_t bpp = display->bytes_per_pixel;
 
-    /* One reusable run of pixels keeps the transfer count down without
-     * allocating a whole-screen buffer. */
     enum { RUN_PIXELS = 64 };
     uint8_t run[RUN_PIXELS * 3];
     for (size_t i = 0; i < RUN_PIXELS; i++) {
-        memcpy(&run[i * 3], pixel, sizeof(pixel));
+        memcpy(&run[i * bpp], pixel, bpp);
     }
 
     select(display);
@@ -265,7 +330,7 @@ static esp_err_t fill_rect(tft_ili9488_t *display,
     uint32_t remaining = (uint32_t)width * height;
     while (remaining > 0) {
         const uint32_t chunk = remaining > RUN_PIXELS ? RUN_PIXELS : remaining;
-        write_data(display, run, (size_t)chunk * 3U);
+        write_data(display, run, (size_t)chunk * bpp);
         remaining -= chunk;
     }
 
@@ -273,13 +338,6 @@ static esp_err_t fill_rect(tft_ili9488_t *display,
     return ESP_OK;
 }
 
-/*
- * Paint one u8g2 tile run.
- *
- * u8g2 hands over `count` 8x8 tiles as 8 bytes each, one byte per column, bit
- * 0 = top pixel. They are expanded to an 8-row by (count*8)-column RGB666
- * block and pushed as a single window.
- */
 static esp_err_t draw_tile_run(tft_ili9488_t *display,
                                const uint8_t *tile_data,
                                uint8_t x_tile,
@@ -291,15 +349,16 @@ static esp_err_t draw_tile_run(tft_ili9488_t *display,
     }
 
     const uint16_t width = (uint16_t)(count * TILE_PIXELS);
-    const size_t row_bytes = (size_t)width * 3U;
+    const size_t bpp = display->bytes_per_pixel;
+    const size_t row_bytes = (size_t)width * bpp;
     if (display->line_buffer == NULL || display->line_buffer_size < row_bytes) {
         return ESP_ERR_NO_MEM;
     }
 
     uint8_t foreground[3];
     uint8_t background[3];
-    rgb565_to_rgb666(display->foreground_rgb565, foreground);
-    rgb565_to_rgb666(display->background_rgb565, background);
+    pack_pixel(display, display->foreground_rgb565, foreground);
+    pack_pixel(display, display->background_rgb565, background);
 
     select(display);
     set_window(display,
@@ -308,13 +367,17 @@ static esp_err_t draw_tile_run(tft_ili9488_t *display,
                width,
                TILE_PIXELS);
 
+    /*
+     * Match tft_ili9341 expand helper: bit clear -> foreground (ink),
+     * bit set -> background (paper). Terminal fills paper with draw-color 1.
+     */
     for (uint8_t row = 0; row < TILE_PIXELS; row++) {
         uint8_t *out = display->line_buffer;
         for (uint8_t column = 0; column < width; column++) {
             const uint8_t bits = tile_data[column];
             const bool lit = (bits & (uint8_t)(1U << row)) != 0;
-            memcpy(out, lit ? foreground : background, 3);
-            out += 3;
+            memcpy(out, lit ? background : foreground, bpp);
+            out += bpp;
         }
         write_data(display, display->line_buffer, row_bytes);
     }
@@ -323,14 +386,60 @@ static esp_err_t draw_tile_run(tft_ili9488_t *display,
     return ESP_OK;
 }
 
-/* --- u8x8 callbacks ------------------------------------------------------ */
-
 /*
- * u8g2 is reused unmodified; these callbacks are the whole integration
- * surface. The byte callback is a no-op because this driver talks to the
- * panel directly rather than routing u8x8's byte protocol - u8g2 only ever
- * reaches the panel here through DRAW_TILE.
+ * Blit the whole u8g2 tile buffer in one GRAM window.
+ *
+ * Per-tile DRAW_TILE (40x40 = 1600 windows) is too slow on hardware_spi and
+ * looks like a hang during splash/terminal present. Full-buffer SendBuffer
+ * always starts at tile (0,0); we flush once there and skip the rest.
  */
+static esp_err_t flush_full_u8g2_buffer(tft_ili9488_t *display)
+{
+    if (display->buffer == NULL || display->line_buffer == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint16_t width = display->config.width;
+    const uint16_t height = display->config.height;
+    const size_t bpp = display->bytes_per_pixel;
+    const size_t row_bytes = (size_t)width * bpp;
+    if (display->line_buffer_size < row_bytes) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint8_t foreground[3];
+    uint8_t background[3];
+    pack_pixel(display, display->foreground_rgb565, foreground);
+    pack_pixel(display, display->background_rgb565, background);
+
+    const size_t tile_row_stride = (size_t)display->tile_width * TILE_PIXELS;
+
+    select(display);
+    set_window(display, 0, 0, width, height);
+
+    for (uint16_t y = 0; y < height; y++) {
+        const uint16_t tile_y = (uint16_t)(y / TILE_PIXELS);
+        const uint8_t bit = (uint8_t)(1U << (y % TILE_PIXELS));
+        const uint8_t *tile_row =
+            display->buffer + (size_t)tile_y * tile_row_stride;
+        uint8_t *out = display->line_buffer;
+
+        for (uint16_t x = 0; x < width; x++) {
+            const uint16_t tile_x = (uint16_t)(x / TILE_PIXELS);
+            const uint8_t column_byte =
+                tile_row[(size_t)tile_x * TILE_PIXELS + (x % TILE_PIXELS)];
+            const bool lit = (column_byte & bit) != 0;
+            memcpy(out, lit ? background : foreground, bpp);
+            out += bpp;
+        }
+
+        write_data(display, display->line_buffer, row_bytes);
+    }
+
+    deselect(display);
+    return ESP_OK;
+}
+
 static uint8_t u8x8_byte_cb(u8x8_t *u8x8, uint8_t message, uint8_t arg_int, void *arg_ptr)
 {
     (void)u8x8;
@@ -361,8 +470,6 @@ static uint8_t u8x8_display_cb(u8x8_t *u8x8, uint8_t message, uint8_t arg_int, v
         return 1;
 
     case U8X8_MSG_DISPLAY_SET_POWER_SAVE:
-        /* Backlight is the only power control available: the panel itself is
-         * left on so the framebuffer contents survive. */
         (void)tft_ili9488_set_backlight(display, arg_int ? 0 : 100);
         return 1;
 
@@ -375,6 +482,30 @@ static uint8_t u8x8_display_cb(u8x8_t *u8x8, uint8_t message, uint8_t arg_int, v
         if (tile == NULL || tile->tile_ptr == NULL || tile->cnt == 0) {
             return 1;
         }
+
+        /*
+         * Full-buffer present always begins at (0,0). One GRAM window for the
+         * whole panel; ignore the remaining ~1599 tile callbacks.
+         */
+        if (tile->x_pos == 0 && tile->y_pos == 0) {
+            const esp_err_t err = flush_full_u8g2_buffer(display);
+            display->skip_remaining_tiles = true;
+            if (err != ESP_OK) {
+                display->last_error = err;
+                display->skip_remaining_tiles = false;
+                return 0;
+            }
+            return 1;
+        }
+
+        if (display->skip_remaining_tiles) {
+            if (tile->y_pos + 1U >= display->tile_height &&
+                (uint16_t)tile->x_pos + tile->cnt >= display->tile_width) {
+                display->skip_remaining_tiles = false;
+            }
+            return 1;
+        }
+
         if (tile->x_pos >= display->tile_width || tile->y_pos >= display->tile_height) {
             return 1;
         }
@@ -396,8 +527,6 @@ static uint8_t u8x8_display_cb(u8x8_t *u8x8, uint8_t message, uint8_t arg_int, v
     }
 }
 
-/* --- Public API ---------------------------------------------------------- */
-
 esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *config)
 {
     if (display == NULL || config == NULL) {
@@ -407,10 +536,21 @@ esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *c
         return ESP_ERR_INVALID_ARG;
     }
 
+    uint8_t colmod = config->colmod;
+    if (colmod == 0U) {
+        colmod = TFT_PICOCALC_COLMOD_RGB565;
+    }
+    if (colmod != TFT_PICOCALC_COLMOD_RGB565 && colmod != TFT_PICOCALC_COLMOD_RGB666) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     memset(display, 0, sizeof(*display));
     display->config = *config;
-    display->foreground_rgb565 = 0xFFFFU;
-    display->background_rgb565 = 0x0000U;
+    display->config.colmod = colmod;
+    display->bytes_per_pixel = (colmod == TFT_PICOCALC_COLMOD_RGB565) ? 2U : 3U;
+    /* Match SolarOS display defaults: black ink on white paper. */
+    display->foreground_rgb565 = 0x0000U;
+    display->background_rgb565 = 0xFFFFU;
     display->backlight_percent = 100U;
 
     display->tile_width = (uint16_t)(config->width / TILE_PIXELS);
@@ -419,14 +559,13 @@ esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *c
         return ESP_ERR_INVALID_SIZE;
     }
 
-    /* u8g2 full-frame buffer: one byte per 8-pixel column per tile row. */
     display->buffer_size = (size_t)display->tile_width * display->tile_height * TILE_PIXELS;
     display->buffer = calloc(1, display->buffer_size);
     if (display->buffer == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-    /* One full pixel row of the widest possible tile run, in RGB666. */
+    /* Allocate for the wider of the two formats so mode switches stay safe. */
     display->line_buffer_size = (size_t)config->width * 3U;
     display->line_buffer = calloc(1, display->line_buffer_size);
     if (display->line_buffer == NULL) {
@@ -435,8 +574,6 @@ esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *c
         return ESP_ERR_NO_MEM;
     }
 
-    /* SPI + control pins. CS and DC are software-driven so a command and its
-     * data can share one chip-select assertion. */
     spi_init(spi_for(display), config->spi_clock_hz);
     spi_set_format(spi_for(display), 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
     gpio_set_function(config->sck_pin, GPIO_FUNC_SPI);
@@ -458,9 +595,11 @@ esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *c
     }
 
     panel_reset(display);
+    ESP_LOGI(TAG, "panel reset done");
     panel_init_sequence(display);
+    ESP_LOGI(TAG, "panel init sequence done (COLMOD 0x%02x)", display->config.colmod);
+    log_panel_id(display);
 
-    /* u8x8 geometry. */
     display->display_info = (u8x8_display_info_t){
         .chip_enable_level = 0,
         .chip_disable_level = 1,
@@ -486,18 +625,23 @@ esp_err_t tft_ili9488_init(tft_ili9488_t *display, const tft_ili9488_config_t *c
     u8g2_InitDisplay(&display->u8g2);
     u8g2_SetPowerSave(&display->u8g2, 0);
 
-    /* Clear to background so the panel does not show power-on noise. */
-    (void)fill_rect(display, 0, 0, config->width, config->height,
-                    display->background_rgb565);
+    /*
+     * Brief black clear so bring-up can tell SPI works without leaving the
+     * RGB diagnostic bars on screen through splash (matches the default
+     * white-on-black terminal palette).
+     */
+    (void)fill_rect(display, 0, 0, config->width, config->height, 0x0000U);
+    ESP_LOGI(TAG, "cleared panel to black");
 
     display->ready = true;
     ESP_LOGI(TAG,
-             "ILI9488 %ux%u on spi%u at %lu Hz, COLMOD 0x%02x (18bpp), MADCTL 0x%02x",
+             "panel %ux%u on spi%u at %lu Hz, COLMOD 0x%02x (%u bpp), MADCTL 0x%02x",
              (unsigned)config->width,
              (unsigned)config->height,
              (unsigned)config->spi_index,
              (unsigned long)config->spi_clock_hz,
-             ILI9488_COLMOD_18BPP,
+             display->config.colmod,
+             (unsigned)(display->bytes_per_pixel * 8U),
              config->madctl);
     return ESP_OK;
 }
@@ -564,11 +708,6 @@ esp_err_t tft_ili9488_set_backlight(tft_ili9488_t *display, uint8_t percent)
     if (percent > 100U) {
         percent = 100U;
     }
-    /*
-     * REG_ID_BKL takes 0..255. The STM32 firmware's LCD_BACKLIGHT_STEP is 16,
-     * so the useful resolution is coarser than one percent, but sending the
-     * scaled value lets the co-processor do its own quantisation.
-     */
     const uint8_t level = (uint8_t)(((uint32_t)percent * 255U) / 100U);
     const esp_err_t err = picocalc_kbd_set_lcd_backlight(level);
     if (err != ESP_OK) {
@@ -590,13 +729,6 @@ esp_err_t tft_ili9488_set_colors(tft_ili9488_t *display,
     return ESP_OK;
 }
 
-/*
- * Present an indexed/mono surface.
- *
- * Only the formats this panel's pipeline actually produces are handled:
- * INDEX8 with an RGB565 palette (the terminal's colour path) and MONO1 (the
- * u8g2 path). INDEX2 is rejected rather than silently mis-rendered.
- */
 esp_err_t tft_ili9488_present_surface(tft_ili9488_t *display,
                                       const solar_os_display_surface_t *surface)
 {
@@ -614,7 +746,8 @@ esp_err_t tft_ili9488_present_surface(tft_ili9488_t *display,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    const size_t row_bytes = (size_t)surface->width * 3U;
+    const size_t bpp = display->bytes_per_pixel;
+    const size_t row_bytes = (size_t)surface->width * bpp;
     if (display->line_buffer_size < row_bytes) {
         return ESP_ERR_NO_MEM;
     }
@@ -642,17 +775,14 @@ esp_err_t tft_ili9488_present_surface(tft_ili9488_t *display,
                 break;
             }
             case SOLAR_OS_DISPLAY_FORMAT_MONO1: {
-                /* Least-significant pixel first within each byte. */
                 const size_t offset = (size_t)y * surface->stride + (x / 8U);
                 if (offset >= surface->data_size) {
                     deselect(display);
                     return ESP_ERR_INVALID_SIZE;
                 }
-                /* Unlike solar_os_display_raster_t, the surface type carries
-                 * no palette_inverted flag - inversion for surfaces is applied
-                 * upstream by the presenter. */
+                /* Same polarity as draw_tile_run / ili9341: 1=background. */
                 const bool lit = (surface->data[offset] & (1U << (x % 8U))) != 0;
-                colour = lit ? display->foreground_rgb565 : display->background_rgb565;
+                colour = lit ? display->background_rgb565 : display->foreground_rgb565;
                 break;
             }
             default:
@@ -660,8 +790,8 @@ esp_err_t tft_ili9488_present_surface(tft_ili9488_t *display,
                 return ESP_ERR_NOT_SUPPORTED;
             }
 
-            rgb565_to_rgb666(colour, out);
-            out += 3;
+            pack_pixel(display, colour, out);
+            out += bpp;
         }
 
         write_data(display, display->line_buffer, row_bytes);
@@ -671,10 +801,6 @@ esp_err_t tft_ili9488_present_surface(tft_ili9488_t *display,
     return ESP_OK;
 }
 
-/*
- * Present a raster at a position, with optional nearest-neighbour scaling from
- * the source geometry to the destination rectangle.
- */
 esp_err_t tft_ili9488_present_frame(tft_ili9488_t *display,
                                     const solar_os_display_raster_t *frame)
 {
@@ -706,7 +832,8 @@ esp_err_t tft_ili9488_present_frame(tft_ili9488_t *display,
         }
     }
 
-    const size_t row_bytes = (size_t)frame->width * 3U;
+    const size_t bpp = display->bytes_per_pixel;
+    const size_t row_bytes = (size_t)frame->width * bpp;
     if (display->line_buffer_size < row_bytes) {
         return ESP_ERR_NO_MEM;
     }
@@ -715,7 +842,6 @@ esp_err_t tft_ili9488_present_frame(tft_ili9488_t *display,
     set_window(display, frame->x, frame->y, frame->width, frame->height);
 
     for (uint16_t y = 0; y < frame->height; y++) {
-        /* Nearest neighbour: map destination row to source row. */
         const uint16_t src_y =
             (uint16_t)(((uint32_t)y * frame->source_height) / frame->height);
         uint8_t *out = display->line_buffer;
@@ -745,9 +871,11 @@ esp_err_t tft_ili9488_present_frame(tft_ili9488_t *display,
                     deselect(display);
                     return ESP_ERR_INVALID_SIZE;
                 }
+                /* Same polarity as draw_tile_run / ili9341: 1=background. */
                 const bool lit = (frame->data[offset] & (1U << (src_x % 8U))) != 0;
-                const bool on = frame->palette_inverted ? !lit : lit;
-                colour = on ? display->foreground_rgb565 : display->background_rgb565;
+                const bool paper = frame->palette_inverted ? !lit : lit;
+                colour = paper ? display->background_rgb565
+                               : display->foreground_rgb565;
                 break;
             }
             default:
@@ -755,8 +883,8 @@ esp_err_t tft_ili9488_present_frame(tft_ili9488_t *display,
                 return ESP_ERR_NOT_SUPPORTED;
             }
 
-            rgb565_to_rgb666(colour, out);
-            out += 3;
+            pack_pixel(display, colour, out);
+            out += bpp;
         }
 
         write_data(display, display->line_buffer, row_bytes);

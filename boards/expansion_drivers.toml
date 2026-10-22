@@ -653,6 +653,20 @@ kind = "pwm"
 hint = "gpio"
 required = true
 
+[drivers.audio-pwm-pico]
+summary = "PicoCalc PWM stereo audio"
+package = "expansion_audio_pwm_pico"
+targets = ["rp2350"]
+capabilities = ["expansion_pwm"]
+board_capabilities = ["audio"]
+board_driver = "audio_expansion"
+default_name = "audio0"
+[[drivers.audio-pwm-pico.bindings]]
+key = "pwm"
+kind = "pwm"
+hint = "gpio"
+required = true
+
 [drivers.pcm5102]
 summary = "I2S stereo audio"
 package = "expansion_pcm5102"

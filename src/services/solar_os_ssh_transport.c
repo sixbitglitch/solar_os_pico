@@ -15,6 +15,7 @@
 
 #include "solar_os_log.h"
 #include "lwip/netdb.h"
+#include "esp_heap_caps.h"
 #include "solar_os_ssh.h"
 #include "solar_os_ssh_keys.h"
 #include "solar_os_storage.h"
@@ -24,6 +25,29 @@
 #define SOLAR_OS_SSH_TRANSPORT_DIR ".ssh"
 #define SOLAR_OS_SSH_TRANSPORT_KNOWN_HOSTS "known_hosts"
 #define SOLAR_OS_SSH_TRANSPORT_HOSTS "hosts"
+
+/*
+ * Route libssh2 buffers through PSRAM. pico-sdk's __wrap_malloc panics the
+ * whole board on newlib-heap OOM; returning NULL here lets libssh2 fail the
+ * operation instead of hard-locking after the channel comes up.
+ */
+static LIBSSH2_ALLOC_FUNC(ssh_transport_alloc)
+{
+    (void)abstract;
+    return heap_caps_malloc(count, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+static LIBSSH2_FREE_FUNC(ssh_transport_free)
+{
+    (void)abstract;
+    heap_caps_free(ptr);
+}
+
+static LIBSSH2_REALLOC_FUNC(ssh_transport_realloc)
+{
+    (void)abstract;
+    return heap_caps_realloc(ptr, count, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 
 static bool transport_should_stop(const solar_os_ssh_transport_config_t *config)
 {
@@ -713,7 +737,10 @@ esp_err_t solar_os_ssh_transport_open(const solar_os_ssh_transport_config_t *con
         return ret != ESP_OK ? ret : ESP_ERR_INVALID_STATE;
     }
 
-    transport->session = libssh2_session_init();
+    transport->session = libssh2_session_init_ex(ssh_transport_alloc,
+                                                 ssh_transport_free,
+                                                 ssh_transport_realloc,
+                                                 NULL);
     if (transport->session == NULL) {
         transport_send_error(config, "SSH session allocation failed");
         solar_os_ssh_transport_close(transport, NULL);

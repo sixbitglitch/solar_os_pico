@@ -11,14 +11,19 @@
 /* Allocate/Free a Memory Block                                           */
 /*------------------------------------------------------------------------*/
 
-#include <stdlib.h>		/* with POSIX API */
-
+#include "esp_heap_caps.h"
 
 void* ff_memalloc (	/* Returns pointer to the allocated memory block (null if not enough core) */
 	UINT msize		/* Number of bytes to allocate */
 )
 {
-	return malloc((size_t)msize);	/* Allocate a new memory block */
+	/* Prefer PSRAM so FatFs LFN buffers do not compete with the tight SRAM
+	 * heap beside FreeRTOS task stacks. */
+	void *ptr = heap_caps_malloc((size_t)msize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (ptr == NULL) {
+		ptr = heap_caps_malloc((size_t)msize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	}
+	return ptr;
 }
 
 
@@ -26,7 +31,7 @@ void ff_memfree (
 	void* mblock	/* Pointer to the memory block to free (no effect if null) */
 )
 {
-	free(mblock);	/* Free the memory block */
+	heap_caps_free(mblock);
 }
 
 #endif

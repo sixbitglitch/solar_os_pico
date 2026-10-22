@@ -160,6 +160,13 @@ esp_err_t picocalc_kbd_init(const picocalc_kbd_config_t *config)
     kbd.address = config->address != 0 ? config->address : PICOCALC_KBD_I2C_ADDRESS;
     kbd.ready = true;
 
+    /*
+     * The generic bus layer brings hardware_i2c up at ESP-IDF's 100 kHz bus
+     * default. Retune to the co-processor's hard 10 kHz ceiling before the
+     * probe; above that the STM32 software slave misses ACKs.
+     */
+    (void)i2c_set_baudrate(kbd.i2c, PICOCALC_KBD_I2C_SPEED_HZ);
+
     /* Probe: REG_VER answers {0, BIOSVERSION}. A co-processor that is absent
      * or wedged will time out here rather than at the first keystroke. */
     uint8_t version = 0;

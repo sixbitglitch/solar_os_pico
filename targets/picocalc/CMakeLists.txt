@@ -60,6 +60,13 @@ project(solar_os_picocalc C CXX ASM)
 
 pico_sdk_init()
 
+# Prefer PSRAM for libc malloc/calloc/realloc/free. Keep pico_malloc's
+# --wrap flags, but drop its SRAM/sbrk wrapper source; SolarOS supplies
+# __wrap_* via solar_os_compat_pico_malloc.c (linked from solar_os_compat).
+if(TARGET pico_malloc)
+    set_property(TARGET pico_malloc PROPERTY INTERFACE_SOURCES "")
+endif()
+
 # FreeRTOS must be added after pico_sdk_init(); its library.cmake defines the
 # FreeRTOS-Kernel* interface targets.
 add_subdirectory("${FREERTOS_RP2350_PORT}" FreeRTOS-Kernel)
@@ -138,6 +145,9 @@ endif()
 
 include("${SOLAR_OS_FLAVOR_CMAKE}")
 
+# Flavour package IDs arrive as a space-separated string; make a CMake list.
+string(REPLACE " " ";" SOLAR_OS_PACKAGE_IDS "${SOLAR_OS_PACKAGE_ID_LIST}")
+
 # Embedded manual. Same generator the ESP-IDF build uses; it turns doc/manual
 # into a C header the `help`/`man` commands read.
 set(SOLAR_OS_MANUAL_HEADER "${SOLAR_OS_GENERATED_DIR}/solar_os_manual_data.h")
@@ -164,6 +174,7 @@ message(STATUS "SolarOS groups  : ${SOLAR_OS_PACKAGE_GROUP_LIST}")
 # path, so ordering decides which one "freertos/task.h" resolves to.
 set(SOLAR_OS_INCLUDE_DIRS
     "${SOLAR_OS_SRC_DIR}/port/pico/compat"
+    "${SOLAR_OS_SRC_DIR}/port/pico"
     "${SOLAR_OS_GENERATED_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/config"
     "${SOLAR_OS_SRC_DIR}"
@@ -265,13 +276,28 @@ target_compile_options(solar_os_miniz PRIVATE -w)
 target_compile_definitions(solar_os_miniz PUBLIC MINIZ_NO_TIME=1)
 
 # --- Compatibility shim -----------------------------------------------------
-add_library(solar_os_compat STATIC
+list(APPEND SOLAR_OS_COMPAT_SRCS
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_gpio.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_periph.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_vfs.c"
     "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_deferred_stubs.c"
+    "${SOLAR_OS_SRC_DIR}/port/pico/compat/solar_os_compat_pico_malloc.c"
+    "${SOLAR_OS_SRC_DIR}/port/pico/solar_os_psram_heap.c"
 )
+# Networking shims (ESP-IDF API surface on lwIP + pico_mbedtls).
+foreach(_shim IN ITEMS
+        solar_os_compat_pico_http_client.c
+        solar_os_compat_pico_mqtt.c
+        solar_os_compat_pico_httpd.c
+        solar_os_compat_pico_transport.c
+        solar_os_compat_pico_ping.c)
+    if(EXISTS "${SOLAR_OS_SRC_DIR}/port/pico/compat/${_shim}")
+        list(APPEND SOLAR_OS_COMPAT_SRCS "${SOLAR_OS_SRC_DIR}/port/pico/compat/${_shim}")
+    endif()
+endforeach()
+
+add_library(solar_os_compat STATIC ${SOLAR_OS_COMPAT_SRCS})
 target_include_directories(solar_os_compat PUBLIC ${SOLAR_OS_INCLUDE_DIRS})
 target_compile_options(solar_os_compat PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
 target_compile_definitions(solar_os_compat PUBLIC ${SOLAR_OS_COMPILE_DEFINITIONS})
@@ -283,11 +309,25 @@ target_link_libraries(solar_os_compat PUBLIC
     hardware_i2c
     hardware_pwm
     hardware_clocks
+    hardware_psram
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
 )
 if(SOLAR_OS_BOARD_NEEDS_FATFS)
     target_link_libraries(solar_os_compat PUBLIC solar_os_fatfs)
+endif()
+if("wifi" IN_LIST SOLAR_OS_BOARD_CAPABILITY_LIST)
+    target_link_libraries(solar_os_compat PUBLIC pico_mbedtls)
+endif()
+if("wifi" IN_LIST SOLAR_OS_BOARD_CAPABILITY_LIST)
+    target_link_libraries(solar_os_compat PUBLIC
+        pico_cyw43_arch_lwip_sys_freertos
+        pico_mbedtls
+    )
+    target_include_directories(solar_os_compat PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/config")
+    target_compile_definitions(solar_os_compat PRIVATE
+        MBEDTLS_CONFIG_FILE=\"mbedtls_config.h\")
 endif()
 
 # --- Board drivers ----------------------------------------------------------
@@ -331,6 +371,8 @@ endif()
 # yet buildable on this target are excluded by name below rather than silently
 # dropped, so the exclusion list doubles as the port's to-do list.
 set(SOLAR_OS_DEFERRED_SRCS
+    # ESP-IDF gptimer + LEDC PWM audio; RP2350 uses drivers/pico/audio_pwm_pico.c.
+    "drivers/audio_pwm.c"
     # Needs an RP2350 flash/partition abstraction (esp_partition + wear
     # levelling). Deferred with NVS persistence - see doc/ports/picocalc.md.
     "drivers/flash_storage.c"
@@ -339,6 +381,11 @@ set(SOLAR_OS_DEFERRED_SRCS
     "services/solar_os_ramfs.c"
     # USB/JTAG console: pico-sdk stdio covers this differently.
     "services/solar_os_cdc.c"
+    # ESP-IDF Wi-Fi / L2 repeater / custom lwIP route hook. Replaced by
+    # services/solar_os_wifi_pico.c (CYW43439 + pico_cyw43_arch_lwip_sys_freertos).
+    "services/solar_os_wifi.c"
+    "services/solar_os_wifi_repeater.c"
+    "services/solar_os_lwip_route.c"
 )
 # main.c defines app_main() - the actual boot sequence (board bring-up,
 # service init, shell/jobs start) that src/port/pico/solar_os_pico_main.c
@@ -368,11 +415,19 @@ list(LENGTH SOLAR_OS_CORE_SRC_PATHS SOLAR_OS_CORE_SRC_COUNT)
 message(STATUS "SolarOS shared sources: ${SOLAR_OS_CORE_SRC_COUNT}")
 message(STATUS "SolarOS deferred      : ${SOLAR_OS_EXCLUDED_SRCS}")
 
+# Pico Wi-Fi backend replaces the deferred ESP-IDF wifi/repeater/route sources.
+if("wifi" IN_LIST SOLAR_OS_BOARD_CAPABILITY_LIST)
+    list(APPEND SOLAR_OS_CORE_SRC_PATHS
+        "${SOLAR_OS_SRC_DIR}/services/solar_os_wifi_pico.c")
+    list(REMOVE_DUPLICATES SOLAR_OS_CORE_SRC_PATHS)
+endif()
+
 # --- RTOS layer -------------------------------------------------------------
 # The concurrency core, built on its own. These four files are the whole
 # argument for keeping FreeRTOS (doc/ports/picocalc.md section 1), and they
 # compile with ZERO source edits - every PSRAM branch in them is already
-# behind #if CONFIG_SPIRAM, which sdkconfig.h defines as 0.
+# behind #if CONFIG_SPIRAM, which sdkconfig.h defines as 1 once the Pico Plus
+# 2 W APS6404 heap is live (see solar_os_psram_heap).
 add_library(solar_os_rtos STATIC
     "${SOLAR_OS_SRC_DIR}/solar_os_task.c"
     "${SOLAR_OS_SRC_DIR}/solar_os_queue.c"
@@ -381,6 +436,200 @@ target_include_directories(solar_os_rtos PUBLIC ${SOLAR_OS_INCLUDE_DIRS})
 target_compile_options(solar_os_rtos PRIVATE ${SOLAR_OS_COMPILE_OPTIONS})
 target_compile_definitions(solar_os_rtos PUBLIC ${SOLAR_OS_COMPILE_DEFINITIONS})
 target_link_libraries(solar_os_rtos PUBLIC solar_os_compat)
+
+# --- Lua --------------------------------------------------------------------
+set(SOLAR_OS_LUA_DIR "${SOLAR_OS_PROJECT_DIR}/components/lua/lua/src")
+if(EXISTS "${SOLAR_OS_LUA_DIR}/lapi.c" AND
+   "app_lua" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    file(GLOB SOLAR_OS_LUA_SRCS "${SOLAR_OS_LUA_DIR}/*.c")
+    list(FILTER SOLAR_OS_LUA_SRCS EXCLUDE REGEX ".*/lua\\.c$")
+    list(FILTER SOLAR_OS_LUA_SRCS EXCLUDE REGEX ".*/luac\\.c$")
+    add_library(solar_os_lua STATIC ${SOLAR_OS_LUA_SRCS})
+    target_include_directories(solar_os_lua PUBLIC "${SOLAR_OS_LUA_DIR}")
+    target_compile_options(solar_os_lua PRIVATE -w)
+    target_compile_definitions(solar_os_lua PUBLIC LUA_32BITS=1)
+    set(SOLAR_OS_HAS_LUA 1)
+else()
+    set(SOLAR_OS_HAS_LUA 0)
+endif()
+
+# --- MicroPython embed ------------------------------------------------------
+set(SOLAR_OS_MPY_DIR "${SOLAR_OS_PROJECT_DIR}/components/micropython_embed")
+if(EXISTS "${SOLAR_OS_MPY_DIR}/micropython_embed/py/mpstate.c" AND
+   "app_python" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    file(GLOB SOLAR_OS_MPY_SRCS
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/py/*.c"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/extmod/*.c"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/shared/runtime/*.c"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/port/*.c"
+    )
+    list(FILTER SOLAR_OS_MPY_SRCS EXCLUDE REGEX
+        ".*/(nlrthumb|nlrx86|nlrx64|nlrxtensa|nlrmips|nlraarch64|nlrrv32|nlrrv64|nlrloong64|nlrpowerpc)\\.c$")
+    add_library(solar_os_micropython STATIC ${SOLAR_OS_MPY_SRCS})
+    target_include_directories(solar_os_micropython PUBLIC
+        "${SOLAR_OS_MPY_DIR}"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/port"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/genhdr"
+        "${SOLAR_OS_MPY_DIR}/micropython_embed/py"
+        ${SOLAR_OS_INCLUDE_DIRS})
+    target_compile_options(solar_os_micropython PRIVATE
+        -Wno-error -Wno-unused-function -Wno-unused-variable
+        -Wno-unused-but-set-variable -w)
+    target_compile_definitions(solar_os_micropython PUBLIC
+        ${SOLAR_OS_COMPILE_DEFINITIONS})
+    target_link_libraries(solar_os_micropython PUBLIC solar_os_compat)
+    set(SOLAR_OS_HAS_MICROPYTHON 1)
+else()
+    set(SOLAR_OS_HAS_MICROPYTHON 0)
+endif()
+
+# --- libssh2 (SSH/SCP) ------------------------------------------------------
+# Built as a plain static library against pico_mbedtls. Upstream libssh2's own
+# CMake looks for a host-installed mbedTLS and is unsuitable for cross builds.
+set(LIBSSH2_ROOT "${SOLAR_OS_PROJECT_DIR}/external/libssh2")
+if(EXISTS "${LIBSSH2_ROOT}/include/libssh2.h" AND
+   "service_ssh" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    set(LIBSSH2_SRCS
+        "${LIBSSH2_ROOT}/src/agent.c"
+        "${LIBSSH2_ROOT}/src/bcrypt_pbkdf.c"
+        "${LIBSSH2_ROOT}/src/blowfish.c"
+        "${LIBSSH2_ROOT}/src/chacha.c"
+        "${LIBSSH2_ROOT}/src/cipher-chachapoly.c"
+        "${LIBSSH2_ROOT}/src/channel.c"
+        "${LIBSSH2_ROOT}/src/comp.c"
+        "${LIBSSH2_ROOT}/src/crypt.c"
+        "${LIBSSH2_ROOT}/src/crypto.c"
+        "${LIBSSH2_ROOT}/src/global.c"
+        "${LIBSSH2_ROOT}/src/hostkey.c"
+        "${LIBSSH2_ROOT}/src/keepalive.c"
+        "${LIBSSH2_ROOT}/src/kex.c"
+        "${LIBSSH2_ROOT}/src/knownhost.c"
+        "${LIBSSH2_ROOT}/src/mac.c"
+        "${LIBSSH2_ROOT}/src/misc.c"
+        "${LIBSSH2_ROOT}/src/packet.c"
+        "${LIBSSH2_ROOT}/src/poly1305.c"
+        "${LIBSSH2_ROOT}/src/pem.c"
+        "${LIBSSH2_ROOT}/src/poly1305.c"
+        "${LIBSSH2_ROOT}/src/publickey.c"
+        "${LIBSSH2_ROOT}/src/scp.c"
+        "${LIBSSH2_ROOT}/src/session.c"
+        "${LIBSSH2_ROOT}/src/sftp.c"
+        "${LIBSSH2_ROOT}/src/transport.c"
+        "${LIBSSH2_ROOT}/src/userauth.c"
+        "${LIBSSH2_ROOT}/src/userauth_kbd_packet.c"
+        "${LIBSSH2_ROOT}/src/version.c"
+        "${LIBSSH2_ROOT}/src/mbedtls.c"
+    )
+    add_library(solar_os_libssh2 STATIC ${LIBSSH2_SRCS})
+    target_include_directories(solar_os_libssh2 PUBLIC
+        "${LIBSSH2_ROOT}/include"
+        "${LIBSSH2_ROOT}/src"
+        "${CMAKE_CURRENT_LIST_DIR}/config"
+        "${SOLAR_OS_SRC_DIR}/port/pico/compat")
+    target_compile_definitions(solar_os_libssh2 PRIVATE
+        HAVE_CONFIG_H
+        LIBSSH2_MBEDTLS=1
+        HAVE_UNISTD_H=1
+        HAVE_INTTYPES_H=1
+        HAVE_SYS_TIME_H=1
+        HAVE_SNPRINTF=1
+        HAVE_GETTIMEOFDAY=1
+        MBEDTLS_CONFIG_FILE=\"mbedtls_config.h\")
+    target_compile_options(solar_os_libssh2 PRIVATE -w)
+    # Do not link pico_cyw43_arch_* here: it is an INTERFACE library with
+    # sources, and would compile lwIP into this archive (duplicate at final
+    # link). Headers alone are enough for send/recv prototypes; the firmware
+    # executable already links the arch library.
+    target_link_libraries(solar_os_libssh2 PUBLIC pico_stdlib pico_rand)
+    target_include_directories(solar_os_libssh2 PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/config"
+        "${PICO_SDK_PATH}/lib/mbedtls/include"
+        "${PICO_SDK_PATH}/lib/lwip/src/include"
+        "${PICO_SDK_PATH}/src/rp2_common/pico_lwip/include"
+        "${PICO_SDK_PATH}/lib/lwip/contrib/ports/freertos/include")
+    target_compile_definitions(solar_os_libssh2 PRIVATE LWIP_PROVIDE_ERRNO=1)
+    set(SOLAR_OS_HAS_LIBSSH2 1)
+else()
+    set(SOLAR_OS_HAS_LIBSSH2 0)
+endif()
+
+# --- Optional media codecs already vendored under components/ ---------------
+if(EXISTS "${SOLAR_OS_PROJECT_DIR}/components/minimp3" AND
+   "service_audio_codecs" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    add_library(solar_os_minimp3 STATIC
+        "${SOLAR_OS_PROJECT_DIR}/components/minimp3/minimp3_impl.c")
+    target_include_directories(solar_os_minimp3 PUBLIC
+        "${SOLAR_OS_PROJECT_DIR}/components/minimp3/include")
+    target_compile_definitions(solar_os_minimp3 PRIVATE
+        MINIMP3_NO_SIMD MINIMP3_ONLY_MP3)
+    target_compile_options(solar_os_minimp3 PRIVATE -w)
+    set(SOLAR_OS_HAS_MINIMP3 1)
+else()
+    set(SOLAR_OS_HAS_MINIMP3 0)
+endif()
+
+if(EXISTS "${SOLAR_OS_PROJECT_DIR}/components/stb_image" AND
+   "service_image" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    add_library(solar_os_stb_image STATIC
+        "${SOLAR_OS_PROJECT_DIR}/components/stb_image/stb_image_port.c")
+    target_include_directories(solar_os_stb_image PUBLIC
+        "${SOLAR_OS_PROJECT_DIR}/components/stb_image/include")
+    target_compile_options(solar_os_stb_image PRIVATE -w)
+    target_link_libraries(solar_os_stb_image PUBLIC solar_os_compat)
+    set(SOLAR_OS_HAS_STB_IMAGE 1)
+else()
+    set(SOLAR_OS_HAS_STB_IMAGE 0)
+endif()
+
+if(EXISTS "${SOLAR_OS_PROJECT_DIR}/components/webp_decoder" AND
+   "service_image" IN_LIST SOLAR_OS_PACKAGE_IDS)
+    set(SOLAR_OS_WEBP_DIR "${SOLAR_OS_PROJECT_DIR}/components/webp_decoder")
+    add_library(solar_os_webp STATIC
+        "${SOLAR_OS_WEBP_DIR}/solar_os_webp_decoder.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/alpha_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/buffer_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/frame_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/idec_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/io_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/quant_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/tree_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/vp8_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/vp8l_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dec/webp_dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/alpha_processing.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/cpu.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/dec.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/dec_clip_tables.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/filters.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/lossless.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/rescaler.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/upsampling.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/dsp/yuv.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/bit_reader_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/color_cache_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/filters_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/huffman_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/palette.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/quant_levels_dec_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/rescaler_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/random_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/thread_utils.c"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src/utils/utils.c"
+    )
+    target_include_directories(solar_os_webp PUBLIC
+        "${SOLAR_OS_WEBP_DIR}/include"
+        "${SOLAR_OS_WEBP_DIR}/libwebp"
+        "${SOLAR_OS_WEBP_DIR}/libwebp/src")
+    target_include_directories(solar_os_webp PRIVATE ${SOLAR_OS_INCLUDE_DIRS})
+    target_compile_definitions(solar_os_webp PRIVATE
+        WEBP_NO_THREAD ${SOLAR_OS_COMPILE_DEFINITIONS})
+    target_compile_options(solar_os_webp PRIVATE -w)
+    target_link_libraries(solar_os_webp PUBLIC solar_os_compat)
+    set(SOLAR_OS_HAS_WEBP 1)
+else()
+    set(SOLAR_OS_HAS_WEBP 0)
+endif()
 
 # --- Firmware ---------------------------------------------------------------
 # Guarded: the shared source set still needs shims that are not written yet
@@ -410,9 +659,38 @@ if(SOLAR_OS_PICOCALC_FULL_FIRMWARE)
         hardware_adc
         hardware_dma
         hardware_flash
+        hardware_pwm
+        hardware_psram
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
     )
+    if("wifi" IN_LIST SOLAR_OS_BOARD_CAPABILITY_LIST)
+        target_link_libraries(picocalc-core
+            pico_cyw43_arch_lwip_sys_freertos
+            pico_mbedtls
+        )
+        # pico_lwip looks for lwipopts.h on the target include path.
+        target_include_directories(picocalc-core PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/config")
+    endif()
+    if(SOLAR_OS_HAS_LUA)
+        target_link_libraries(picocalc-core solar_os_lua)
+    endif()
+    if(SOLAR_OS_HAS_MICROPYTHON)
+        target_link_libraries(picocalc-core solar_os_micropython)
+    endif()
+    if(SOLAR_OS_HAS_LIBSSH2)
+        target_link_libraries(picocalc-core solar_os_libssh2)
+    endif()
+    if(SOLAR_OS_HAS_MINIMP3)
+        target_link_libraries(picocalc-core solar_os_minimp3)
+    endif()
+    if(SOLAR_OS_HAS_STB_IMAGE)
+        target_link_libraries(picocalc-core solar_os_stb_image)
+    endif()
+    if(SOLAR_OS_HAS_WEBP)
+        target_link_libraries(picocalc-core solar_os_webp)
+    endif()
     pico_enable_stdio_uart(picocalc-core 1)
     pico_enable_stdio_usb(picocalc-core 1)
     pico_add_extra_outputs(picocalc-core)

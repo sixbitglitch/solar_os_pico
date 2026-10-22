@@ -1,5 +1,6 @@
 .pio/
 build/
+dist/
 !fonts/build/
 fonts/build/*
 !fonts/build/u8g2/
@@ -11,6 +12,8 @@ sdkconfig.old
 sdkconfig.*
 !sdkconfig.defaults
 !sdkconfig.defaults.*
+# PicoCalc ESP-IDF compat shim (hand-written; not an ESP-IDF generated file).
+!src/port/pico/compat/sdkconfig.h
 managed_components/
 dependencies.lock
 

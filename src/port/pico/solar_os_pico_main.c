@@ -15,7 +15,12 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hardware/psram.h"
 #include "pico/stdlib.h"
+#include "solar_os_psram_heap.h"
+#if LIB_PICO_STDIO_USB
+#include "pico/stdio_usb.h"
+#endif
 
 static const char *TAG = "boot";
 
@@ -34,10 +39,32 @@ extern void app_main(void);
 #define SOLAR_OS_MAIN_TASK_STACK 8192U
 #define SOLAR_OS_MAIN_TASK_PRIORITY (tskIDLE_PRIORITY + 5)
 
+/* How long to wait for the host to open the USB CDC port before continuing.
+ * Without this, early ESP_LOGI lines are lost while the Mac enumerates the
+ * device - exactly when you need them for a blank-screen bring-up. */
+#ifndef SOLAR_OS_USB_CONNECT_WAIT_MS
+#define SOLAR_OS_USB_CONNECT_WAIT_MS 5000U
+#endif
+
+static void solar_os_wait_for_console(void)
+{
+#if LIB_PICO_STDIO_USB
+    const absolute_time_t deadline = make_timeout_time_ms(SOLAR_OS_USB_CONNECT_WAIT_MS);
+    while (!stdio_usb_connected() && !time_reached(deadline)) {
+        sleep_ms(20);
+    }
+    if (stdio_usb_connected()) {
+        /* Give the host monitor a beat to attach after DTR. */
+        sleep_ms(200);
+    }
+#endif
+}
+
 static void solar_os_main_task(void *arg)
 {
     (void)arg;
 
+    ESP_LOGI(TAG, "boot task running; calling app_main()");
     app_main();
 
     /*
@@ -54,8 +81,36 @@ int main(void)
     /* Bring stdio up before anything logs. Which backends exist is decided by
      * pico_enable_stdio_uart/usb in targets/picocalc/CMakeLists.txt. */
     stdio_init_all();
+    solar_os_wait_for_console();
+
+    printf("\n");
+    printf("========================================\n");
+    printf(" SolarOS PicoCalc (RP2350) boot\n");
+    printf(" USB CDC + UART0 @ 115200\n");
+    printf("========================================\n");
+    fflush(stdout);
 
     ESP_LOGI(TAG, "SolarOS on RP2350 starting");
+#if LIB_PICO_STDIO_USB
+    ESP_LOGI(TAG, "USB CDC %s", stdio_usb_connected() ? "connected" : "not connected (continuing)");
+#endif
+
+    if (psram_is_available()) {
+        /* Must run before any EXT_RAM_BSS_ATTR table is touched (resource
+         * claims, shell session, …). Heap init also clears BSS, but call it
+         * explicitly so a later heap failure cannot skip the wipe. */
+        solar_os_psram_bss_clear();
+        if (solar_os_psram_heap_init()) {
+            ESP_LOGI(TAG,
+                     "PSRAM ready: chip %u bytes, heap %u bytes free",
+                     (unsigned)psram_get_size(),
+                     (unsigned)solar_os_psram_heap_free_size());
+        } else {
+            ESP_LOGW(TAG, "PSRAM mapped but heap init failed; BSS cleared");
+        }
+    } else {
+        ESP_LOGW(TAG, "PSRAM unavailable; continuing with internal SRAM only");
+    }
 
     if (xTaskCreate(solar_os_main_task,
                     "solar_os_main",

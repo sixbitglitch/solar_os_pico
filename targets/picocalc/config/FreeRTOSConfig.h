@@ -11,12 +11,12 @@
  *                             argument meaningful rather than ignored.
  *  configUSE_CORE_AFFINITY 1  Required for vTaskCoreAffinitySet, which the
  *                             ESP-IDF core-pinning shim maps onto.
- *  configTOTAL_HEAP_SIZE      RP2350 has 520 KB SRAM. 256 KB is left to the
- *                             FreeRTOS heap; the rest covers .bss/.data
- *                             (the display shadow buffers are the big
- *                             consumers) and the main stack. This number is
- *                             a starting point, NOT a measured budget - it
- *                             has never been validated on hardware.
+ *  configTOTAL_HEAP_SIZE      Internal SRAM FreeRTOS heap. Libc malloc,
+ *                             queues, audio rings, Lua, and Python prefer the
+ *                             8 MB PSRAM heap (solar_os_psram_heap + the
+ *                             pico malloc wrap). 128 KB here covers TCBs,
+ *                             DMA-capable work, and small INTERNAL_CRITICAL
+ *                             allocations. Validate with `mem`/`top`.
  *  configUSE_TASK_NOTIFICATIONS  The jobs framework's stop protocol is built
  *                             entirely on ulTaskNotifyTake/xTaskNotifyGive.
  *  configCHECK_FOR_STACK_OVERFLOW / configUSE_MALLOC_FAILED_HOOK
@@ -56,7 +56,7 @@
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 /* Backs heap_caps_* in the compatibility shim. See the note above before
  * changing: task admission decisions are made against this heap's free size. */
-#define configTOTAL_HEAP_SIZE                   (256 * 1024)
+#define configTOTAL_HEAP_SIZE                   (128 * 1024)
 #define configAPPLICATION_ALLOCATED_HEAP        0
 
 #define configCHECK_FOR_STACK_OVERFLOW          2
@@ -111,6 +111,9 @@
 #define INCLUDE_xTaskAbortDelay                 1
 #define INCLUDE_xTaskGetHandle                  1
 #define INCLUDE_xTaskResumeFromISR              1
+/* Required by pico_async_context_freertos (CYW43439 / lwIP arch). */
+#define INCLUDE_xSemaphoreGetMutexHolder        1
+#define INCLUDE_xQueueGetMutexHolder            1
 
 /*
  * Cortex-M33 port options. RP2350's Arm cores have an FPU, and the

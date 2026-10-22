@@ -474,7 +474,7 @@ members = ["expansion_neopixel"]
 [groups.audio_pwm]
 label = "PWM audio output"
 category = "Expansion hardware"
-members = ["expansion_audio_pwm"]
+members = ["expansion_audio_pwm", "expansion_audio_pwm_pico"]
 
 [groups.pcm5102]
 label = "PCM5102 audio output"
@@ -1406,6 +1406,19 @@ sources = [
 ]
 requires = ["esp_driver_gpio", "esp_driver_gptimer", "esp_driver_ledc"]
 capabilities = ["expansion_pwm"]
+
+# PicoCalc / Pico Plus 2 W PWM audio on GPIO26/27 via pico-sdk hardware_pwm.
+[packages.expansion_audio_pwm_pico]
+label = "expansion.audio-pwm-pico"
+targets = ["rp2350"]
+expansion_drivers = ["solar_os_audio_pwm_expansion_driver"]
+depends = ["service_audio", "service_expansion"]
+sources = [
+  "drivers/pico/audio_pwm_pico.c",
+  "services/solar_os_audio_pwm.c",
+  "services/solar_os_audio_pwm_pico_driver.c",
+]
+capabilities = ["expansion_pwm", "audio"]
 
 [packages.expansion_pcm5102]
 label = "expansion.pcm5102"

@@ -1646,7 +1646,9 @@ void app_main(void)
                               esp_err_to_name(display_service_err));
             }
             solar_os_gfx_init(&gfx, display_u8g2);
+            ESP_LOGI(TAG, "boot milestone: display service ready, painting splash");
             solar_os_splash_clear(&gfx);
+            ESP_LOGI(TAG, "boot milestone: splash clear presented");
 
             shell_terminal = solar_os_memory_calloc(1,
                                                     sizeof(*shell_terminal),
@@ -1663,6 +1665,7 @@ void app_main(void)
                                                        session_overlay_requested,
                                                        NULL));
                 solar_os_splash_draw(&gfx, "starting services");
+                ESP_LOGI(TAG, "boot milestone: splash draw presented");
             } else {
                 ESP_LOGE(TAG, "Terminal allocation failed; continuing without display shell");
                 solar_os_board_display_deinit(&board_display);

@@ -7,26 +7,20 @@ description = "SolarOS terminal baseline for the Clockwork PicoCalc on a Pico Pl
 # each omission is deliberate rather than an oversight.
 #
 # Deliberately OFF (do not enable without reading the port doc first):
-#   wifi, bluetooth       - no CYW43439 driver and no lwIP in this target yet.
-#   ssh                   - depends on the net package, which depends on wifi.
-#   http_client, wireguard- same: net package.
-#   audio_support         - no audio backend ported.
+#   bluetooth             - CYW43439 BT stack not wired for this pass.
+#   wireguard, slip, osc  - deferred; net stack still settling.
+# SoftAP / NAT / L2 repeater return NOT_SUPPORTED on the pico Wi-Fi backend.
 #   cardkb, ps2_keyboard  - replaced by the PicoCalc STM32 keyboard driver.
 #   rfm69, rfm95          - no radio on this hardware.
 #   midi, sump            - depend on transports/jobs not ported.
 #   logic_analyzer        - depends on the SUMP capture path.
 #   sdmmc                 - this port does SD over SPI, not SDIO.
-#   sdspi                 - that group is the *expansion* SPI-SD package, whose
-#                           sources (drivers/sd_card.c) are ESP-IDF sdspi/FATFS
-#                           glue. This port supplies SD as a *board* driver
-#                           instead (boards/drivers/storage_sd_spi_pico.cmake),
-#                           so sd_storage is on but sdspi stays off.
+#   sdspi                 - board SD driver is used instead.
 #   neopixel, pcd8544,
 #   ssd1683, ssd1306,
 #   analog_joystick,
-#   ps2_mouse, audio_pwm,
-#   pcm5102, pcm1808      - no such hardware on the PicoCalc mainboard.
-#   python, lua, all ble* - out of scope for this pass.
+#   ps2_mouse, pcm5102,
+#   pcm1808               - no such hardware on the PicoCalc mainboard.
 
 [groups]
 hardware_shell = true
@@ -40,6 +34,7 @@ adc = true
 pwm = true
 logging = true
 battery_monitor = true
+wifi = true
 embedded_docs = true
 serial_terminal = true
 editor = true
@@ -50,3 +45,26 @@ io = true
 clock = true
 calculator = true
 picocalc_keyboard = true
+
+# Networking (needs pico lwIP + HTTP/MQTT/SSH shims)
+http_client = true
+web_browser = true
+ssh = true
+ftp = true
+telnet = true
+http_server = true
+mqtt = true
+ntp = true
+webradio = true
+
+# Scripting / games / audio
+python = true
+lua = true
+gameboy = true
+audio_support = true
+audio_commands = true
+player = true
+recorder = true
+synth = true
+function_generator = true
+audio_pwm = true

@@ -172,18 +172,27 @@ def load_catalog(path: Path) -> PackageCatalog:
                 f"packages.{name} has unknown dependency/dependencies: "
                 f"{', '.join(unknown_dependencies)}")
 
-    expansion_driver_owners: dict[str, str] = {}
+    expansion_driver_owners: dict[str, tuple[str, tuple[str, ...]]] = {}
     for name, package_def in package_defs.items():
         for symbol in package_def.expansion_drivers:
             if not symbol.isidentifier():
                 raise ValueError(
                     f"packages.{name}.expansion_drivers contains invalid C symbol: {symbol}")
-            previous_owner = expansion_driver_owners.get(symbol)
-            if previous_owner is not None:
-                raise ValueError(
-                    f"expansion driver symbol {symbol} is owned by both "
-                    f"{previous_owner} and {name}")
-            expansion_driver_owners[symbol] = name
+            previous = expansion_driver_owners.get(symbol)
+            if previous is not None:
+                previous_owner, previous_targets = previous
+                # Same expansion driver symbol may be claimed by per-target
+                # packages (e.g. ESP LEDC vs pico-sdk PWM) when their target
+                # sets are disjoint.
+                if previous_targets and package_def.targets:
+                    overlap = set(previous_targets) & set(package_def.targets)
+                else:
+                    overlap = {"*"}
+                if overlap:
+                    raise ValueError(
+                        f"expansion driver symbol {symbol} is owned by both "
+                        f"{previous_owner} and {name}")
+            expansion_driver_owners[symbol] = (name, package_def.targets)
 
     visiting: set[str] = set()
     visited: set[str] = set()

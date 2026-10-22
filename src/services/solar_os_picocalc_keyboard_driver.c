@@ -28,6 +28,9 @@ const solar_os_expansion_driver_t solar_os_picocalc_keyboard_expansion_driver = 
     .category = SOLAR_OS_EXPANSION_CATEGORY_INPUT,
     .summary = "PicoCalc STM32 keyboard",
     .required_capabilities = SOLAR_OS_BOARD_CAP_EXPANSION_I2C,
+    /* Early: display backlight and battery both speak to this co-processor
+     * over I2C, and board display init runs before the late expansion pass. */
+    .early = true,
     .probe_supported = true,
     .binding_specs = binding_specs,
     .binding_spec_count = sizeof(binding_specs) / sizeof(binding_specs[0]),

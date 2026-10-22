@@ -23,6 +23,10 @@ static const char *TAG = "board-display";
 #define SOLAR_OS_BOARD_PIN_LCD_RST (-1)
 #endif
 
+#ifndef SOLAR_OS_BOARD_DISPLAY_COLMOD
+#define SOLAR_OS_BOARD_DISPLAY_COLMOD TFT_PICOCALC_COLMOD_RGB565
+#endif
+
 static tft_ili9488_t panel;
 static solar_os_board_display_t board_display;
 
@@ -184,6 +188,7 @@ esp_err_t solar_os_board_display_init(solar_os_board_display_t *display)
         .col_offset = SOLAR_OS_BOARD_DISPLAY_COL_OFFSET,
         .row_offset = SOLAR_OS_BOARD_DISPLAY_ROW_OFFSET,
         .madctl = SOLAR_OS_BOARD_DISPLAY_MADCTL,
+        .colmod = (uint8_t)SOLAR_OS_BOARD_DISPLAY_COLMOD,
         .backlight_via_coprocessor = true,
         .rotation = SOLAR_OS_BOARD_DISPLAY_U8G2_ROTATION,
     };
@@ -206,20 +211,31 @@ esp_err_t solar_os_board_display_init(solar_os_board_display_t *display)
     display->frame_formats =
         SOLAR_OS_DISPLAY_FORMAT_INDEX8_BIT | SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
     /*
-     * Throughput estimate, NOT a measurement. At 50 MHz (see
-     * SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ's comment in the board manifest)
-     * with 3 bytes per pixel a full 320x320 frame is ~102 KB, so roughly
-     * 60 fps is the theoretical ceiling before per-transfer overhead. 38 fps
-     * is advertised to leave headroom for that overhead; this is still a
-     * hardware_spi polling transfer, not the PIO+DMA double-buffered
-     * approach that reaches a full 60 fps in community ports of this same
-     * hardware (see doc/ports/picocalc.md section 7.4) - and none of it has
-     * run on hardware.
+     * Throughput estimate for RGB565 (2 bytes/pixel) at the board SPI clock.
+     * Still hardware_spi polling, not PIO+DMA. See doc/ports/picocalc.md §7.4.
      */
-    display->preferred_stream_fps = 38;
-    display->max_stream_pixels_per_second = 320U * 320U * 38U;
+    display->preferred_stream_fps = 45;
+    display->max_stream_pixels_per_second = 320U * 320U * 45U;
     display->ready = true;
 
+    /* Backlight is on the STM32 keyboard co-processor. Force it on now that
+     * early expansion should have attached picocalc-kbd, and log the result so
+     * a blank screen is distinguishable from "panel works, BL off". */
+    const esp_err_t bl_err = tft_ili9488_set_backlight(&panel, 100);
+    if (bl_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "backlight set failed (%s) - keyboard co-processor may not be ready",
+                 esp_err_to_name(bl_err));
+    } else {
+        ESP_LOGI(TAG, "backlight set to 100%%");
+    }
+
+    ESP_LOGI(TAG,
+             "display ready: %s %ux%u COLMOD=0x%02x",
+             SOLAR_OS_BOARD_DISPLAY_CONTROLLER,
+             (unsigned)SOLAR_OS_BOARD_DISPLAY_WIDTH,
+             (unsigned)SOLAR_OS_BOARD_DISPLAY_HEIGHT,
+             (unsigned)SOLAR_OS_BOARD_DISPLAY_COLMOD);
     return ESP_OK;
 }
 

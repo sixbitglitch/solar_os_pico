@@ -1,17 +1,12 @@
 /*
  * esp_heap_caps.h - pico-sdk compatibility shim.
  *
- * RP2350 has one uniform SRAM heap, so the capability bits carry no placement
- * meaning and the allocators are plain malloc/free. The reporting functions
- * are not stubs, though: they answer from FreeRTOS heap_4 statistics, because
- * src/solar_os_task.c gates every task launch on them (see
- * solar_os_task_can_create) and a constant answer would break admission
- * control rather than merely degrade it.
+ * Internal allocations use FreeRTOS heap_4 (SRAM). External (SPIRAM)
+ * allocations use the PSRAM heap brought up by solar_os_psram_heap once
+ * hardware_psram has mapped the Pico Plus 2 W APS6404.
  *
- * MALLOC_CAP_SPIRAM deliberately reports zero free and zero total. Nothing in
- * the picocalc-core flavour allocates with it - the PSRAM paths are compiled
- * out by CONFIG_SPIRAM=0 - and reporting zero is the truthful answer for a
- * target that does not bring its PSRAM up.
+ * solar_os_task_can_create() gates every task launch on free-size answers, so
+ * the reporting functions return live statistics rather than constants.
  */
 #pragma once
 
@@ -38,6 +33,9 @@ void *heap_caps_malloc(size_t size, uint32_t caps);
 void *heap_caps_calloc(size_t n, size_t size, uint32_t caps);
 void *heap_caps_realloc(void *ptr, size_t size, uint32_t caps);
 void heap_caps_free(void *ptr);
+
+void *heap_caps_malloc_prefer(size_t size, size_t num, ...);
+void *heap_caps_calloc_prefer(size_t n, size_t size, size_t num, ...);
 
 size_t heap_caps_get_free_size(uint32_t caps);
 size_t heap_caps_get_total_size(uint32_t caps);

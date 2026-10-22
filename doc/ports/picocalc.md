@@ -137,41 +137,25 @@ reference configuration. The settings that are *not* defaults:
 
 ## 2. Memory / PSRAM budget check
 
-**Finding: no PSRAM re-budget is needed for this flavour. Verified, not
-assumed.**
+**Finding: Pico Plus 2 W PSRAM is now in use.** The board header already
+declares `PICO_PSRAM_CS_PIN` (GPIO47) and `PICO_PSRAM_SIZE_BYTES` (8 MB). The
+port links `hardware_psram` so pico-sdk maps the APS6404 at boot, and
+`solar_os_psram_heap` turns the leftover (after any `__uninitialized_psram`
+sections) into a capability heap for `MALLOC_CAP_SPIRAM`.
 
-What was checked:
+What this means for SolarOS:
 
-- `src/solar_os_task.c` / `.h` offer three creation helpers —
-  `solar_os_task_create_pinned()`, `..._pinned_internal()` and
-  `..._pinned_external()` — where "external" means a PSRAM-backed stack. The
-  distinction exists only to keep PSRAM stacks away from cache-disabled flash
-  operations (documented in the `solar_os_task.h` comment block).
-- Crucially, **every PSRAM path in those two files is already behind
-  `#if CONFIG_SPIRAM`** (via `SOLAR_OS_FREERTOS_EXTERNAL_MEMORY`). With the
-  shim's `sdkconfig.h` defining `CONFIG_SPIRAM 0`,
-  `solar_os_task_create_pinned_external()` tail-calls the internal variant and
-  `solar_os_queue_create()` calls plain `xQueueCreate`. The admission
-  accounting, role statistics and wait protocol carry over untouched. Both
-  files compile **unmodified**.
-- `MALLOC_CAP_SPIRAM` does appear in five linked files (`main.c`,
-  `solar_os_queue.c`, `solar_os_task.c`, `services/solar_os_memory.c`,
-  `shell/solar_os_shell_system.c`), but only in two roles: inside those
-  `#if CONFIG_SPIRAM` blocks, and in `heap_caps_get_free_size()` /
-  `heap_caps_get_total_size()` *reporting* calls. The shim answers 0 free and
-  0 total for that capability, which is the truthful answer for a target that
-  does not bring its PSRAM up. No linked file ever *allocates* with it.
-- PSRAM-backed static placement via `EXT_RAM_BSS_ATTR` (7 uses, e.g.
-  `src/services/solar_os_cardkb.c:38`) is an ESP-IDF attribute the shim defines
-  empty, moving those arrays back to ordinary `.bss`.
+- `CONFIG_SPIRAM=1` in the pico `sdkconfig.h` stand-in, so queues go through
+  `xQueueCreateWithCaps` into PSRAM and `EXT_RAM_BSS_ATTR` lands in PSRAM.
+- Internal FreeRTOS heap is 128 KB of SRAM (task stacks / DMA); FatFs LFN
+  buffers prefer PSRAM via `ff_memalloc`.
+- `solar_os_task_create_pinned_external()` can place stacks in PSRAM; keep that
+  for workers that never touch flash with the cache disabled.
 
-**Honest caveat about the hardware itself:** the Pimoroni Pico Plus 2 W does in
-fact carry 8 MB of PSRAM (APS6404 on GPIO47), and pico-sdk 2.x has a
-`hardware_psram` driver for it. This port deliberately treats the target as
-PSRAM-less — nothing in the linked file set needs it, and bringing it up would
-add an unvalidated dependency for no in-scope benefit. If a later pass wants
-PSRAM (large framebuffers, the Python runtime), that is new work, not a
-regression of this one.
+Earlier bring-up deliberately treated the target as PSRAM-less (CONFIG_SPIRAM
+0). That left ~478 KB of SRAM BSS against a 520 KB budget and paniced with
+pico-sdk's `Out of memory` once FatFs/`malloc` exhausted the scraps beside the
+256 KB FreeRTOS heap.
 
 ---
 
@@ -690,7 +674,7 @@ BLE as a feature even though the CYW43439 is physically present.
 | **GPIO interrupts** | `gpio_config`'s `intr_type` is accepted and ignored | `gpio_set_irq_enabled_with_callback()`; nothing in this flavour registers an ISR (the keyboard is polled, card-detect is read on demand) |
 | **Open-drain GPIO** | Returns `ESP_ERR_NOT_SUPPORTED` | RP2350 has no open-drain driver; emulation must be per-transition at the call site |
 | **Per-device I2C clock speeds** | All devices on a bus run at one rate; shim warns | RP2350 sets the rate per peripheral, not per device |
-| **PSRAM** | 8 MB present, unused | `hardware_psram`; only worth it if a later pass needs the capacity |
+| **PSRAM** | 8 MB APS6404 on GPIO47, heap live | `hardware_psram` + `solar_os_psram_heap`; `CONFIG_SPIRAM=1` |
 | **Multi-partition SD mounts** | Only partition 1 is mountable; others enumerate but report `mountable = false` | `FF_MULTI_PARTITION` in `ffconf.h` plus volume-to-partition mapping |
 | **File timestamps** | Files are stamped 1980-01-01 | `solar_os_board_storage_fattime()` needs wiring to the time service |
 | **SD erase-block alignment** | `f_mkfs` gets `GET_BLOCK_SIZE = 1` (unknown), giving a slightly less optimal format | Read `AU_SIZE` from the SD status register in `sd_spi_pico.c` |

@@ -57,6 +57,18 @@ typedef int esp_err_t;
 #define ESP_ERR_FLASH_OP_FAIL       (ESP_ERR_FLASH_BASE + 1)
 #define ESP_ERR_FLASH_OP_TIMEOUT    (ESP_ERR_FLASH_BASE + 2)
 
+#define ESP_ERR_HTTP_BASE               0x7000
+#define ESP_ERR_HTTP_MAX_REDIRECT       (ESP_ERR_HTTP_BASE + 1)
+#define ESP_ERR_HTTP_CONNECT            (ESP_ERR_HTTP_BASE + 2)
+#define ESP_ERR_HTTP_WRITE_DATA         (ESP_ERR_HTTP_BASE + 3)
+#define ESP_ERR_HTTP_FETCH_HEADER       (ESP_ERR_HTTP_BASE + 4)
+#define ESP_ERR_HTTP_INVALID_TRANSPORT  (ESP_ERR_HTTP_BASE + 5)
+#define ESP_ERR_HTTP_CONNECTING         (ESP_ERR_HTTP_BASE + 6)
+#define ESP_ERR_HTTP_EAGAIN             (ESP_ERR_HTTP_BASE + 7)
+#define ESP_ERR_HTTP_CONNECTION_CLOSED  (ESP_ERR_HTTP_BASE + 8)
+#define ESP_ERR_HTTP_NOT_MODIFIED       (ESP_ERR_HTTP_BASE + 9)
+#define ESP_ERR_HTTP_INCOMPLETE_DATA    (ESP_ERR_HTTP_BASE + 10)
+
 /* Human-readable name for an esp_err_t. Returns a pointer to static storage
  * for known codes and to a per-call static buffer otherwise, matching
  * ESP-IDF's contract closely enough for the logging call sites. */

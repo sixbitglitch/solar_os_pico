@@ -9,6 +9,9 @@
 #include "solar_os_board_caps.h"
 #include "solar_os_buttons.h"
 #include "solar_os_cdc.h"
+#if defined(SOLAR_OS_BOARD_BATTERY_VIA_PICOCALC_KBD) && SOLAR_OS_BOARD_BATTERY_VIA_PICOCALC_KBD
+#include "solar_os_picocalc_battery.h"
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_CHAT
 #include "solar_os_chat.h"
 #endif
@@ -291,6 +294,16 @@ void solar_os_boot_services_init(uint32_t now_ms)
 #endif
 
 #if SOLAR_OS_PACKAGE_SERVICE_BATTERY
+#if defined(SOLAR_OS_BOARD_BATTERY_VIA_PICOCALC_KBD) && SOLAR_OS_BOARD_BATTERY_VIA_PICOCALC_KBD
+    {
+        const esp_err_t picocalc_bat_err = solar_os_picocalc_battery_attach();
+        if (picocalc_bat_err != ESP_OK) {
+            SOLAR_OS_LOGW(TAG,
+                          "PicoCalc battery attach failed: %s",
+                          esp_err_to_name(picocalc_bat_err));
+        }
+    }
+#endif
     if (solar_os_battery_has_provider()) {
         const esp_err_t battery_err = solar_os_battery_init();
         if (battery_err != ESP_OK) {

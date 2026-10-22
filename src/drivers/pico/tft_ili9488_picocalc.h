@@ -1,29 +1,18 @@
 /*
- * tft_ili9488_picocalc.h - 320x320 ILI9488 panel on the Clockwork PicoCalc.
+ * tft_ili9488_picocalc.h - 320x320 colour panel on the Clockwork PicoCalc.
  *
- * Modelled on src/drivers/tft_ili9341.c/.h: u8g2 is reused as-is (vendored,
- * portable C under components/u8g2/src/clib), and this driver supplies the
- * u8x8 byte/display callbacks rather than reimplementing a renderer.
+ * The panel controller has shipped as more than one part across PicoCalc
+ * production. clockworkpi's older reference driver treated it as ILI9488 in
+ * 18bpp (COLMOD 0x66); current units and independent ports that actually run
+ * on hardware (e.g. jeffory/PicOS) identify it as ST7365P and drive it in
+ * 16bpp RGB565 (COLMOD 0x55). Both share the same SPI pins, MADCTL, and the
+ * MIPI DCS command set.
  *
- * TWO THINGS DIFFER FROM THE ILI9341 DRIVER, AND BOTH MATTER:
+ * Default wire format is RGB565 (0x55). Set config.colmod to 0x66 only for
+ * units that need the old ILI9488 18bpp path.
  *
- * 1. PIXEL FORMAT. ILI9488 over 4-wire SPI cannot accept 16bpp data for a
- *    memory write - the controller only supports 18bpp (3 bytes per pixel,
- *    RGB666) on the serial interface. This is why clockworkpi's own reference
- *    driver sets COLMOD to 0x66 rather than 0x55. The surface pipeline above
- *    this driver stays RGB565 (foreground_rgb565 / background_rgb565, matching
- *    every other colour panel in the tree); conversion to RGB666 happens in
- *    the SPI write path. Choosing RGB565 on the wire instead would compile and
- *    then produce a garbled display.
- *
- * 2. BACKLIGHT. The PicoCalc's LCD backlight is not connected to a Pico GPIO.
- *    It is driven by the STM32 co-processor and set by writing register 0x05
- *    (REG_ID_BKL) over the keyboard I2C link. So brightness control routes
- *    through src/drivers/pico/picocalc_keyboard.c, and needs the keyboard
- *    driver to have attached first.
- *
- * Init sequence source: github.com/clockworkpi/PicoCalc,
- * Code/picocalc_helloworld/lcdspi/lcdspi.c, pico_lcd_init() ILI9488 branch.
+ * Backlight is driven by the STM32 co-processor (REG_ID_BKL over keyboard
+ * I2C), not a Pico GPIO - see picocalc_keyboard.c.
  */
 
 #pragma once
@@ -40,6 +29,9 @@
 extern "C" {
 #endif
 
+#define TFT_PICOCALC_COLMOD_RGB565 0x55U
+#define TFT_PICOCALC_COLMOD_RGB666 0x66U
+
 typedef struct {
     /* 0 or 1: which RP2350 SPI block. The PicoCalc wires the panel to spi1. */
     uint8_t spi_index;
@@ -55,6 +47,8 @@ typedef struct {
     uint16_t col_offset;
     uint16_t row_offset;
     uint8_t madctl;
+    /* COLMOD value: TFT_PICOCALC_COLMOD_RGB565 (default) or _RGB666. */
+    uint8_t colmod;
     /* True when brightness is set through the STM32 co-processor rather than
      * a GPIO. Always true on the PicoCalc. */
     bool backlight_via_coprocessor;
@@ -64,7 +58,7 @@ typedef struct {
 typedef struct {
     u8g2_t u8g2;
     uint8_t *buffer;      /* u8g2 tile buffer */
-    uint8_t *line_buffer; /* one tile row expanded to RGB666 */
+    uint8_t *line_buffer; /* one scanline expanded to wire pixels */
     size_t buffer_size;
     size_t line_buffer_size;
     uint16_t foreground_rgb565;
@@ -72,7 +66,10 @@ typedef struct {
     uint16_t tile_width;
     uint16_t tile_height;
     uint8_t backlight_percent;
+    uint8_t bytes_per_pixel; /* 2 for RGB565, 3 for RGB666 */
     bool ready;
+    /* After a full-buffer flush on tile (0,0), ignore the rest of that SendBuffer. */
+    bool skip_remaining_tiles;
     esp_err_t last_error;
     tft_ili9488_config_t config;
     u8x8_display_info_t display_info;

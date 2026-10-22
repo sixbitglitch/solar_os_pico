@@ -35,26 +35,27 @@ drivers = [
 capabilities = [
   "display", "gfx", "display_brightness", "streaming_display",
   "uart", "sd", "i2c", "spi", "gpio", "adc", "pwm", "key", "battery",
+  "wifi", "audio", "psram",
   "expansion_gpio", "expansion_i2c", "expansion_spi", "expansion_uart",
   "expansion_adc", "expansion_pwm",
 ]
 required_packages = []
-# The Pico Plus 2 W does carry 8 MB of APS6404 PSRAM on GPIO47, but this port
-# deliberately does not bring it up - nothing in the picocalc-core flavour
-# needs it. Declared as 0 so the PSRAM capability stays off and the task
-# allocator reports external stacks as unsupported. See doc/ports/picocalc.md
-# section 2.
-psram_bytes = 0
+# Pico Plus 2 W carries 8 MB APS6404 PSRAM on GPIO47. Declared so packages that
+# require the psram capability (python/lua/gameboy/web) are not pruned. The
+# pico port brings it up via hardware_psram and solar_os_psram_heap.
+psram_bytes = 8388608
 
 [header]
 includes = ["solar_os_keys.h"]
 
 [defines]
-# --- Display: ILI9488 320x320, spi1 -----------------------------------------
-# Init sequence, MADCTL and geometry taken verbatim from clockworkpi's
-# reference driver Code/picocalc_helloworld/lcdspi/lcdspi.c (pico_lcd_init,
-# #ifdef ILI9488 branch).
-SOLAR_OS_BOARD_DISPLAY_CONTROLLER = '"ILI9488"'
+# --- Display: ST7365P (ILI9488-compatible) 320x320, spi1 ---------------------
+# Current PicoCalc production panels are ST7365P. Older clockworkpi reference
+# code treated them as ILI9488 in 18bpp (COLMOD 0x66); on-device ports that
+# actually work (jeffory/PicOS) use RGB565 (COLMOD 0x55) with MADCTL 0x48.
+# Forcing 0x66 on an ST7365P yields a black screen with sparse random pixels.
+# Set COLMOD back to 0x66 only if you have a confirmed legacy ILI9488 unit.
+SOLAR_OS_BOARD_DISPLAY_CONTROLLER = '"ST7365P"'
 SOLAR_OS_BOARD_DISPLAY_CONTROLLER_ILI9488 = "1"
 SOLAR_OS_BOARD_DISPLAY_DRIVER_NAME = '"ili9488"'
 SOLAR_OS_BOARD_DISPLAY_WIDTH = "320"
@@ -64,21 +65,15 @@ SOLAR_OS_BOARD_DISPLAY_NATIVE_HEIGHT = "320"
 SOLAR_OS_BOARD_DISPLAY_U8G2_ROTATION = "U8G2_R0"
 SOLAR_OS_BOARD_DISPLAY_COL_OFFSET = "0"
 SOLAR_OS_BOARD_DISPLAY_ROW_OFFSET = "0"
-# 0x48 = MX | BGR, exactly as the reference driver writes it.
+# 0x48 = MX | BGR, matching PicOS / Picoware / vendor MADCTL.
 SOLAR_OS_BOARD_DISPLAY_MADCTL = "0x48"
-# ILI9488 over 4-wire SPI cannot accept 16bpp pixel data for a memory write;
-# 0x66 (18bpp, 3 bytes/pixel) is the only usable COLMOD on this interface, and
-# is what the reference driver selects. The surface pipeline stays RGB565 and
-# the driver expands to RGB666 at the SPI boundary. See doc/ports/picocalc.md.
-SOLAR_OS_BOARD_DISPLAY_COLMOD = "0x66"
-# 50 MHz, not the vendor's 25 MHz default: clockworkpi's own reference driver
-# (Code/picocalc_helloworld/lcdspi/lcdspi.h) defines LCD_SPI_SPEED as 25 MHz
-# but carries a commented-out 50 MHz alternative right next to it - evidence
-# it was tried and left in, not just a hypothetical. Still hardware_spi
-# polling, not the PIO+DMA approach some community ports use for higher
-# rates; see doc/ports/picocalc.md section 7.4 for the full picture and why
-# this port did not go further.
-SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "50000000"
+# Optical inversion. 1 = INVON (PicOS default). Set 0 if black/white look swapped.
+SOLAR_OS_BOARD_DISPLAY_INVON = "0"
+# 0x55 = 16bpp RGB565 (ST7365P). 0x66 = 18bpp RGB666 (legacy ILI9488 path).
+SOLAR_OS_BOARD_DISPLAY_COLMOD = "0x55"
+# Vendor default is 25 MHz; 50 MHz is the commented alternative in their
+# lcdspi.h. Use 25 MHz until hardware_spi at higher rates is validated.
+SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "25000000"
 SOLAR_OS_BOARD_PIN_LCD_SCK = "10"
 SOLAR_OS_BOARD_PIN_LCD_MOSI = "11"
 SOLAR_OS_BOARD_PIN_LCD_MISO = "12"
@@ -136,11 +131,15 @@ uart_ports = ["0", "1"]
 # Pins
 #
 # "fixed" pins have a confirmed dedicated function on the PicoCalc mainboard.
-# "free" + expansion pins are the Pico Plus 2 W's own extra castellations
-# (GPIO40-46), which are NOT routed through the PicoCalc's 40-pin Pico socket -
-# the mainboard only wires the standard Pico footprint. They are usable only if
-# the module's extra headers are reachable in a given build. This is called out
-# again in doc/ports/picocalc.md so nobody mistakes them for PicoCalc pins.
+#
+# J703 (case side GPIO header) breaks out GP2/3/4/5/21/28. Those nets also run
+# to the mainboard ESP-PSRAM64H (except GP28). With the Pico Plus 2 W this
+# firmware uses the module's own PSRAM on GPIO47, so the mainboard chip stays
+# idle while RAM_CS (GP20) is left alone — the side header is usable as GPIO.
+#
+# GPIO40-46 are Pico Plus 2 W module castellations, NOT routed through the
+# PicoCalc 40-pin socket. Keep them free for programmatic use if reachable;
+# they are not on the physical connector map below.
 # ---------------------------------------------------------------------------
 [[pins]]
 gpio = 0
@@ -151,6 +150,38 @@ role = "uart0 tx"
 gpio = 1
 policy = "fixed"
 role = "uart0 rx"
+
+[[pins]]
+gpio = 2
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP2 (mainboard PSRAM IO)"
+
+[[pins]]
+gpio = 3
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP3 (mainboard PSRAM IO)"
+
+[[pins]]
+gpio = 4
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP4 (mainboard PSRAM IO)"
+
+[[pins]]
+gpio = 5
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP5 (mainboard PSRAM IO)"
 
 [[pins]]
 gpio = 6
@@ -213,6 +244,19 @@ policy = "fixed"
 role = "sd spi mosi"
 
 [[pins]]
+gpio = 20
+policy = "fixed"
+role = "mainboard psram cs"
+
+[[pins]]
+gpio = 21
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP21 (mainboard PSRAM SCK)"
+
+[[pins]]
 gpio = 22
 policy = "fixed"
 role = "sd card detect"
@@ -220,17 +264,25 @@ role = "sd card detect"
 [[pins]]
 gpio = 26
 policy = "fixed"
-role = "audio pwm left (reserved, unused this pass)"
+role = "audio pwm left"
 
 [[pins]]
 gpio = 27
 policy = "fixed"
-role = "audio pwm right (reserved, unused this pass)"
+role = "audio pwm right"
+
+[[pins]]
+gpio = 28
+policy = "free"
+expansion = true
+user = true
+pwm = true
+role = "J703 GP28"
 
 # Pico Plus 2 W extra castellations. ADC_BASE_PIN is 40 on RP2350B
 # (PICO_RP2350A == 0), so GPIO40-46 are the ADC-capable pins. GPIO45 is the
 # module's USER switch and GPIO47 is its PSRAM chip select, so both are
-# excluded.
+# excluded. Not present on the PicoCalc side header.
 [[pins]]
 gpio = 40
 policy = "free"
@@ -340,3 +392,145 @@ driver = "picocalc-kbd"
 [devices.bindings]
 i2c = "i2c1"
 addr = 0x1f
+
+[[devices]]
+name = "audio0"
+driver = "audio-pwm-pico"
+
+[devices.bindings]
+pwm = 26
+
+# ---------------------------------------------------------------------------
+# Physical connector map (io app / `expansion layout`)
+#
+# J703 is the case side GPIO socket (clockwork Mainboard V2.0 schematic;
+# corroborated by jamesmunns/calc-riff and community pinouts). J702 is the
+# adjacent debug/UART socket — shown for completeness; UART0 shares the CH340
+# console path and UART1/USB belong to the STM32 co-processor.
+# ---------------------------------------------------------------------------
+[connector]
+title = "J702 / J703 side sockets"
+view = "left case edge, sockets facing out; pin 1 (3V3) at top, pin 8 (GND) at bottom; J702 left column, J703 right column"
+rows = 8
+columns = 2
+
+[[connectors]]
+connector = "J702"
+position = 1
+row = 0
+column = 0
+kind = "power"
+label = "MCU 3V3"
+[[connectors]]
+connector = "J703"
+position = 1
+row = 0
+column = 1
+kind = "power"
+label = "3V3"
+[[connectors]]
+connector = "J702"
+position = 2
+row = 1
+column = 0
+gpio = 1
+kind = "gpio"
+label = "UART0 RX"
+[[connectors]]
+connector = "J703"
+position = 2
+row = 1
+column = 1
+gpio = 2
+kind = "gpio"
+label = "GP2"
+[[connectors]]
+connector = "J702"
+position = 3
+row = 2
+column = 0
+gpio = 0
+kind = "gpio"
+label = "UART0 TX"
+[[connectors]]
+connector = "J703"
+position = 3
+row = 2
+column = 1
+gpio = 3
+kind = "gpio"
+label = "GP3"
+[[connectors]]
+connector = "J702"
+position = 4
+row = 3
+column = 0
+kind = "control"
+label = "UART1 RX (STM32)"
+[[connectors]]
+connector = "J703"
+position = 4
+row = 3
+column = 1
+gpio = 4
+kind = "gpio"
+label = "GP4"
+[[connectors]]
+connector = "J702"
+position = 5
+row = 4
+column = 0
+kind = "control"
+label = "UART1 TX (STM32)"
+[[connectors]]
+connector = "J703"
+position = 5
+row = 4
+column = 1
+gpio = 5
+kind = "gpio"
+label = "GP5"
+[[connectors]]
+connector = "J702"
+position = 6
+row = 5
+column = 0
+kind = "control"
+label = "USB DP (STM32)"
+[[connectors]]
+connector = "J703"
+position = 6
+row = 5
+column = 1
+gpio = 21
+kind = "gpio"
+label = "GP21"
+[[connectors]]
+connector = "J702"
+position = 7
+row = 6
+column = 0
+kind = "control"
+label = "USB DM (STM32)"
+[[connectors]]
+connector = "J703"
+position = 7
+row = 6
+column = 1
+gpio = 28
+kind = "gpio"
+label = "GP28"
+[[connectors]]
+connector = "J702"
+position = 8
+row = 7
+column = 0
+kind = "ground"
+label = "GND"
+[[connectors]]
+connector = "J703"
+position = 8
+row = 7
+column = 1
+kind = "ground"
+label = "GND"

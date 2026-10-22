@@ -294,6 +294,8 @@ static void audio_player_task(void *arg)
 
 static bool audio_player_create_buffer(solar_os_audio_player_t *player)
 {
+    /* Prefer PSRAM for the decode/playback ring. Fall back to a smaller
+     * internal buffer only when external memory is unavailable. */
 #if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
     if (player->options.external_buffer_bytes > 0U) {
         player->buffer = solar_os_memory_alloc(
@@ -308,6 +310,15 @@ static bool audio_player_create_buffer(solar_os_audio_player_t *player)
         }
     }
 #endif
+    if (player->buffer == NULL && player->options.external_buffer_bytes > 0U) {
+        player->buffer = solar_os_memory_alloc(
+            player->options.external_buffer_bytes,
+            SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+            "audio.player.buffer");
+        if (player->buffer != NULL) {
+            player->buffer_capacity = player->options.external_buffer_bytes;
+        }
+    }
     if (player->buffer == NULL) {
         player->buffer = solar_os_memory_alloc(
             player->options.internal_buffer_bytes,

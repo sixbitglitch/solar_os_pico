@@ -22,12 +22,17 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "pico/rand.h"
 #include "pico/stdlib.h"
+#include "hardware/psram.h"
 #include "hardware/watchdog.h"
+#include "solar_os_psram_heap.h"
+
+#include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                             */
@@ -50,6 +55,12 @@ const char *esp_err_to_name(esp_err_t code)
     case ESP_ERR_INVALID_VERSION:       return "ESP_ERR_INVALID_VERSION";
     case ESP_ERR_NOT_FINISHED:          return "ESP_ERR_NOT_FINISHED";
     case ESP_ERR_NOT_ALLOWED:           return "ESP_ERR_NOT_ALLOWED";
+    case ESP_ERR_HTTP_MAX_REDIRECT:     return "ESP_ERR_HTTP_MAX_REDIRECT";
+    case ESP_ERR_HTTP_CONNECT:          return "ESP_ERR_HTTP_CONNECT";
+    case ESP_ERR_HTTP_WRITE_DATA:       return "ESP_ERR_HTTP_WRITE_DATA";
+    case ESP_ERR_HTTP_FETCH_HEADER:     return "ESP_ERR_HTTP_FETCH_HEADER";
+    case ESP_ERR_HTTP_EAGAIN:           return "ESP_ERR_HTTP_EAGAIN";
+    case ESP_ERR_HTTP_INCOMPLETE_DATA:  return "ESP_ERR_HTTP_INCOMPLETE_DATA";
     case ESP_ERR_NVS_NOT_FOUND:         return "ESP_ERR_NVS_NOT_FOUND";
     case ESP_ERR_NVS_INVALID_HANDLE:    return "ESP_ERR_NVS_INVALID_HANDLE";
     case ESP_ERR_NVS_INVALID_NAME:      return "ESP_ERR_NVS_INVALID_NAME";
@@ -93,42 +104,60 @@ int64_t esp_timer_get_time(void)
 /* ------------------------------------------------------------------ */
 
 /*
- * RP2350 has a single uniform SRAM heap. The capability bits are therefore
- * only a filter, not a placement request:
+ * Two heaps:
+ *   MALLOC_CAP_SPIRAM   -> APS6404 PSRAM (solar_os_psram_heap)
+ *   MALLOC_CAP_INTERNAL -> FreeRTOS heap_4 in SRAM
  *
- *   MALLOC_CAP_SPIRAM  -> always empty, this target does not map PSRAM.
- *   everything else    -> the one real heap.
- *
- * Free/largest-block answers come from FreeRTOS heap_4 rather than from a
- * fixed number, because solar_os_task_can_create() refuses task launches based
- * on them. A constant would turn admission control into either "always yes"
- * (and then fail in xTaskCreate) or "always no".
+ * Caps that name neither prefer PSRAM, then internal (DEFAULT), matching
+ * ESP-IDF's "prefer PSRAM for ordinary malloc" policy once SPIRAM is up.
+ * Libc malloc/calloc/realloc/free are wrapped to the same DEFAULT path
+ * (solar_os_compat_pico_malloc.c).
  */
 
-static bool caps_select_spiram(uint32_t caps)
+static bool caps_require_spiram(uint32_t caps)
 {
     return (caps & MALLOC_CAP_SPIRAM) != 0 && (caps & MALLOC_CAP_INTERNAL) == 0;
 }
 
+static bool caps_require_internal(uint32_t caps)
+{
+    return (caps & MALLOC_CAP_INTERNAL) != 0 && (caps & MALLOC_CAP_SPIRAM) == 0;
+}
+
+static void *heap_caps_malloc_internal(size_t size)
+{
+    return pvPortMalloc(size);
+}
+
+static void *heap_caps_malloc_spiram(size_t size)
+{
+    (void)solar_os_psram_heap_init();
+    return solar_os_psram_malloc(size);
+}
+
 void *heap_caps_malloc(size_t size, uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return NULL;
+    if (caps_require_spiram(caps)) {
+        return heap_caps_malloc_spiram(size);
     }
-    return pvPortMalloc(size);
+    if (caps_require_internal(caps) || (caps & MALLOC_CAP_DMA) != 0) {
+        return heap_caps_malloc_internal(size);
+    }
+    /* DEFAULT / unspecified: PSRAM first when available, else internal. */
+    void *ptr = heap_caps_malloc_spiram(size);
+    if (ptr == NULL) {
+        ptr = heap_caps_malloc_internal(size);
+    }
+    return ptr;
 }
 
 void *heap_caps_calloc(size_t n, size_t size, uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return NULL;
-    }
-    /* Overflow check: pvPortMalloc takes a single size. */
     if (n != 0 && size > (size_t)-1 / n) {
         return NULL;
     }
     const size_t total = n * size;
-    void *ptr = pvPortMalloc(total);
+    void *ptr = heap_caps_malloc(total, caps);
     if (ptr != NULL) {
         memset(ptr, 0, total);
     }
@@ -137,21 +166,39 @@ void *heap_caps_calloc(size_t n, size_t size, uint32_t caps)
 
 void *heap_caps_realloc(void *ptr, size_t size, uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return NULL;
-    }
-    /* FreeRTOS heap_4 has no realloc. Allocate-and-copy is correct but cannot
-     * know the old block's size, so it copies the new size and relies on the
-     * allocator's block header bounds. Growing is safe; shrinking copies only
-     * what is asked for. Callers in this tree always grow. */
     if (ptr == NULL) {
-        return pvPortMalloc(size);
+        return heap_caps_malloc(size, caps);
     }
     if (size == 0) {
-        vPortFree(ptr);
+        heap_caps_free(ptr);
         return NULL;
     }
-    void *fresh = pvPortMalloc(size);
+
+    if (solar_os_psram_heap_contains(ptr)) {
+        if (caps_require_internal(caps)) {
+            void *fresh = heap_caps_malloc_internal(size);
+            if (fresh == NULL) {
+                return NULL;
+            }
+            memcpy(fresh, ptr, size);
+            solar_os_psram_free(ptr);
+            return fresh;
+        }
+        return solar_os_psram_realloc(ptr, size);
+    }
+
+    /* Internal pointer. FreeRTOS heap_4 has no realloc; allocate-and-copy. */
+    if (caps_require_spiram(caps)) {
+        void *fresh = heap_caps_malloc_spiram(size);
+        if (fresh == NULL) {
+            return NULL;
+        }
+        memcpy(fresh, ptr, size);
+        vPortFree(ptr);
+        return fresh;
+    }
+
+    void *fresh = heap_caps_malloc_internal(size);
     if (fresh == NULL) {
         return NULL;
     }
@@ -162,47 +209,100 @@ void *heap_caps_realloc(void *ptr, size_t size, uint32_t caps)
 
 void heap_caps_free(void *ptr)
 {
+    if (ptr == NULL) {
+        return;
+    }
+    if (solar_os_psram_heap_contains(ptr)) {
+        solar_os_psram_free(ptr);
+        return;
+    }
     vPortFree(ptr);
+}
+
+void *heap_caps_malloc_prefer(size_t size, size_t num, ...)
+{
+    va_list args;
+    va_start(args, num);
+    void *ptr = NULL;
+    for (size_t i = 0; i < num; i++) {
+        const uint32_t caps = va_arg(args, uint32_t);
+        ptr = heap_caps_malloc(size, caps);
+        if (ptr != NULL) {
+            break;
+        }
+    }
+    va_end(args);
+    return ptr;
+}
+
+void *heap_caps_calloc_prefer(size_t n, size_t size, size_t num, ...)
+{
+    va_list args;
+    va_start(args, num);
+    void *ptr = NULL;
+    for (size_t i = 0; i < num; i++) {
+        const uint32_t caps = va_arg(args, uint32_t);
+        ptr = heap_caps_calloc(n, size, caps);
+        if (ptr != NULL) {
+            break;
+        }
+    }
+    va_end(args);
+    return ptr;
 }
 
 size_t heap_caps_get_free_size(uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return 0;
+    if (caps_require_spiram(caps)) {
+        (void)solar_os_psram_heap_init();
+        return solar_os_psram_heap_free_size();
     }
-    return xPortGetFreeHeapSize();
+    if (caps_require_internal(caps) || (caps & MALLOC_CAP_DMA) != 0) {
+        return xPortGetFreeHeapSize();
+    }
+    return xPortGetFreeHeapSize() + solar_os_psram_heap_free_size();
 }
 
 size_t heap_caps_get_total_size(uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return 0;
+    if (caps_require_spiram(caps)) {
+        (void)solar_os_psram_heap_init();
+        return solar_os_psram_heap_total_size();
     }
-    return configTOTAL_HEAP_SIZE;
+    if (caps_require_internal(caps) || (caps & MALLOC_CAP_DMA) != 0) {
+        return configTOTAL_HEAP_SIZE;
+    }
+    return configTOTAL_HEAP_SIZE + solar_os_psram_heap_total_size();
 }
 
 size_t heap_caps_get_largest_free_block(uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return 0;
+    if (caps_require_spiram(caps)) {
+        (void)solar_os_psram_heap_init();
+        return solar_os_psram_heap_largest_free_block();
     }
-    /*
-     * heap_4 does not expose largest-free-block directly. xPortGetFreeHeapSize
-     * is an upper bound on it, and using it here makes admission control
-     * slightly optimistic: a launch can still fail in xTaskCreate when the
-     * heap is fragmented, which the caller already handles (it records the
-     * failure as non-denied). The alternative - walking heap_4's free list -
-     * needs kernel-internal access this shim deliberately does not take.
-     */
-    return xPortGetFreeHeapSize();
+    if (caps_require_internal(caps) || (caps & MALLOC_CAP_DMA) != 0) {
+        /*
+         * heap_4 does not expose largest-free-block directly. Free size is an
+         * upper bound; admission may still fail in xTaskCreate when fragmented.
+         */
+        return xPortGetFreeHeapSize();
+    }
+    const size_t internal = xPortGetFreeHeapSize();
+    const size_t external = solar_os_psram_heap_largest_free_block();
+    return internal > external ? internal : external;
 }
 
 size_t heap_caps_get_minimum_free_size(uint32_t caps)
 {
-    if (caps_select_spiram(caps)) {
-        return 0;
+    if (caps_require_spiram(caps)) {
+        (void)solar_os_psram_heap_init();
+        return solar_os_psram_heap_minimum_free_size();
     }
-    return xPortGetMinimumEverFreeHeapSize();
+    if (caps_require_internal(caps) || (caps & MALLOC_CAP_DMA) != 0) {
+        return xPortGetMinimumEverFreeHeapSize();
+    }
+    return xPortGetMinimumEverFreeHeapSize() + solar_os_psram_heap_minimum_free_size();
 }
 
 /* ------------------------------------------------------------------ */
@@ -251,6 +351,9 @@ void esp_chip_info(esp_chip_info_t *out_info)
     out_info->cores = 2;
     out_info->revision = 0;
     out_info->features = CHIP_FEATURE_EMB_FLASH;
+    if (psram_is_available()) {
+        out_info->features |= CHIP_FEATURE_EMB_PSRAM;
+    }
     /* Wi-Fi/BLE are NOT reported even though the CYW43439 is physically
      * present: no driver is linked in this flavour, so claiming the feature
      * would make `hw` lie. */
@@ -284,6 +387,23 @@ void esp_fill_random(void *buf, size_t len)
 /* FreeRTOS: ESP-IDF additions                                        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * SolarOS / ESP-IDF pass task stack sizes in bytes. Vanilla FreeRTOS
+ * (pico-sdk's kernel) takes StackType_t words. Without this conversion,
+ * every PinnedToCore task was allocated 4x too large on RP2350 — SSH's
+ * 12 KB request became a 48 KB stack and starved the FreeRTOS heap until
+ * later mallocs (via pico's panic-on-OOM __wrap_malloc) hard-locked the
+ * board after an SSH channel came up.
+ */
+static configSTACK_DEPTH_TYPE freertos_stack_words_from_idf_bytes(uint32_t stack_bytes)
+{
+    if (stack_bytes == 0U) {
+        return 0;
+    }
+    return (configSTACK_DEPTH_TYPE)((stack_bytes + sizeof(StackType_t) - 1U) /
+                                    sizeof(StackType_t));
+}
+
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task_code,
                                    const char *name,
                                    const uint32_t stack_depth,
@@ -293,9 +413,11 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task_code,
                                    const BaseType_t core_id)
 {
     TaskHandle_t created = NULL;
+    const configSTACK_DEPTH_TYPE stack_words =
+        freertos_stack_words_from_idf_bytes(stack_depth);
     const BaseType_t result = xTaskCreate(task_code,
                                           name,
-                                          (configSTACK_DEPTH_TYPE)stack_depth,
+                                          stack_words,
                                           parameters,
                                           priority,
                                           &created);
@@ -319,6 +441,135 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task_code,
         *task_handle = created;
     }
     return result;
+}
+
+BaseType_t xTaskCreatePinnedToCoreWithCaps(TaskFunction_t task_code,
+                                           const char *name,
+                                           const uint32_t stack_depth,
+                                           void *parameters,
+                                           UBaseType_t priority,
+                                           TaskHandle_t *task_handle,
+                                           const BaseType_t core_id,
+                                           UBaseType_t caps)
+{
+    if (task_code == NULL || stack_depth == 0) {
+        return pdFAIL;
+    }
+
+    const configSTACK_DEPTH_TYPE stack_words =
+        freertos_stack_words_from_idf_bytes(stack_depth);
+    const size_t stack_bytes = (size_t)stack_words * sizeof(StackType_t);
+    StackType_t *stack = (StackType_t *)heap_caps_malloc(stack_bytes, (uint32_t)caps);
+    StaticTask_t *tcb = (StaticTask_t *)heap_caps_malloc(
+        sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (stack == NULL || tcb == NULL) {
+        heap_caps_free(stack);
+        heap_caps_free(tcb);
+        return pdFAIL;
+    }
+
+    TaskHandle_t created = NULL;
+#if (configUSE_CORE_AFFINITY == 1) && (configNUMBER_OF_CORES > 1)
+    UBaseType_t affinity = tskNO_AFFINITY;
+    if (core_id == 0 || core_id == 1) {
+        affinity = (UBaseType_t)(1U << (unsigned)core_id);
+    }
+    created = xTaskCreateStaticAffinitySet(task_code,
+                                           name,
+                                           stack_words,
+                                           parameters,
+                                           priority,
+                                           stack,
+                                           tcb,
+                                           affinity);
+#else
+    (void)core_id;
+    created = xTaskCreateStatic(task_code,
+                                name,
+                                stack_words,
+                                parameters,
+                                priority,
+                                stack,
+                                tcb);
+#endif
+    if (created == NULL) {
+        heap_caps_free(stack);
+        heap_caps_free(tcb);
+        return pdFAIL;
+    }
+    if (task_handle != NULL) {
+        *task_handle = created;
+    }
+    return pdPASS;
+}
+
+void vTaskDeleteWithCaps(TaskHandle_t task)
+{
+    TaskHandle_t target = (task == NULL) ? xTaskGetCurrentTaskHandle() : task;
+    StackType_t *stack = NULL;
+    StaticTask_t *tcb = NULL;
+    const BaseType_t got = xTaskGetStaticBuffers(target, &stack, &tcb);
+    vTaskDelete(target);
+    if (got == pdTRUE) {
+        heap_caps_free(stack);
+        heap_caps_free(tcb);
+    }
+}
+
+QueueHandle_t xQueueCreateWithCaps(UBaseType_t length,
+                                   UBaseType_t item_size,
+                                   UBaseType_t caps)
+{
+    const size_t storage_bytes = (size_t)length * (size_t)item_size;
+    uint8_t *storage = NULL;
+    if (storage_bytes > 0) {
+        storage = (uint8_t *)heap_caps_malloc(storage_bytes, (uint32_t)caps);
+        if (storage == NULL) {
+            return NULL;
+        }
+    }
+    StaticQueue_t *queue_buffer =
+        (StaticQueue_t *)heap_caps_malloc(sizeof(StaticQueue_t), (uint32_t)caps);
+    if (queue_buffer == NULL) {
+        heap_caps_free(storage);
+        return NULL;
+    }
+    QueueHandle_t queue =
+        xQueueCreateStatic(length, item_size, storage, queue_buffer);
+    if (queue == NULL) {
+        heap_caps_free(storage);
+        heap_caps_free(queue_buffer);
+    }
+    return queue;
+}
+
+void vQueueDeleteWithCaps(QueueHandle_t queue)
+{
+    if (queue == NULL) {
+        return;
+    }
+    uint8_t *storage = NULL;
+    StaticQueue_t *queue_buffer = NULL;
+    const BaseType_t got = xQueueGetStaticBuffers(queue, &storage, &queue_buffer);
+    vQueueDelete(queue);
+    if (got == pdTRUE) {
+        heap_caps_free(storage);
+        heap_caps_free(queue_buffer);
+    }
+}
+
+SemaphoreHandle_t xSemaphoreCreateMutexWithCaps(UBaseType_t caps)
+{
+    StaticSemaphore_t *buffer =
+        (StaticSemaphore_t *)heap_caps_malloc(sizeof(StaticSemaphore_t), (uint32_t)caps);
+    if (buffer == NULL) {
+        return NULL;
+    }
+    SemaphoreHandle_t sem = xSemaphoreCreateMutexStatic(buffer);
+    if (sem == NULL) {
+        heap_caps_free(buffer);
+    }
+    return sem;
 }
 
 /* ------------------------------------------------------------------ */

@@ -220,7 +220,9 @@ bool solar_os_storage_is_mounted(void)
 bool solar_os_storage_sd_is_mounted(void)
 {
 #if SOLAR_OS_STORAGE_HAS_REMOVABLE
-    return solar_os_board_storage_available() && solar_os_board_storage_is_mounted();
+    /* Mount state alone drives the status-bar icon. Card-detect belongs in
+     * available()/probe paths, not in "is the filesystem mounted?". */
+    return solar_os_board_storage_is_mounted();
 #else
     return false;
 #endif

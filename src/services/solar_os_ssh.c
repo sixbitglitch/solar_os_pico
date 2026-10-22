@@ -476,7 +476,7 @@ esp_err_t solar_os_ssh_start(const solar_os_ssh_config_t *config,
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t created = solar_os_task_create_pinned_internal(
+    BaseType_t created = solar_os_task_create_pinned_external(
         ssh_session_task,
         "solar_os_ssh",
         SOLAR_OS_SSH_TASK_STACK,
@@ -485,6 +485,18 @@ esp_err_t solar_os_ssh_start(const solar_os_ssh_config_t *config,
         &session->task,
         tskNO_AFFINITY,
         SOLAR_OS_TASK_ROLE_FOREGROUND);
+    if (created != pdPASS) {
+        /* Fall back to internal SRAM if PSRAM stacks are unavailable. */
+        created = solar_os_task_create_pinned_internal(
+            ssh_session_task,
+            "solar_os_ssh",
+            SOLAR_OS_SSH_TASK_STACK,
+            session,
+            SOLAR_OS_SSH_TASK_PRIORITY,
+            &session->task,
+            tskNO_AFFINITY,
+            SOLAR_OS_TASK_ROLE_FOREGROUND);
+    }
     if (created != pdPASS) {
         solar_os_ssh_stop(session);
         return ESP_ERR_NO_MEM;

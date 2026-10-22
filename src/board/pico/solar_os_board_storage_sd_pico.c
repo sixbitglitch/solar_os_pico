@@ -239,6 +239,9 @@ static esp_err_t mount_volume(const char *mount_point)
     if (err != ESP_OK) {
         return err;
     }
+    /* Mount is the normal boot path; mark the service initialised so status
+     * helpers that gate on available() agree with a live volume. */
+    storage_initialised = true;
     if (storage_mounted) {
         return ESP_OK;
     }
@@ -274,6 +277,11 @@ esp_err_t solar_os_board_storage_init(void)
 
 bool solar_os_board_storage_available(void)
 {
+    /* A mounted volume remains available even if card-detect flickers; the
+     * VFS and shell keep serving files until unmount. */
+    if (storage_mounted || sd_spi_ready()) {
+        return true;
+    }
     return storage_initialised && sd_spi_card_present();
 }
 

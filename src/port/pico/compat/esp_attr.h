@@ -1,16 +1,18 @@
 /*
  * esp_attr.h - pico-sdk compatibility shim.
  *
- * ESP-IDF section-placement attributes. On RP2350 there is no PSRAM in use
- * and no IRAM/flash cache split to manage from C, so every one of these
- * collapses to nothing and the objects land in ordinary .bss/.text.
- * EXT_RAM_BSS_ATTR in particular is what moves a few large static arrays back
- * from PSRAM into .bss - see doc/ports/picocalc.md section 2.
+ * With PSRAM enabled, EXT_RAM_BSS_ATTR places large SolarOS static tables in
+ * the APS6404 via pico-sdk's .psram_uninitialised section. That section is
+ * NOLOAD (not zeroed by crt0); solar_os_psram_bss_clear() zeroes it after
+ * hardware_psram is up so it matches ESP-IDF SPIRAM BSS semantics.
+ * IRAM/DRAM/RTC attributes have no RP2350 counterpart and stay empty.
  */
 #pragma once
 
-#define EXT_RAM_BSS_ATTR
-#define EXT_RAM_NOINIT_ATTR
+#include "pico/platform/sections.h"
+
+#define EXT_RAM_BSS_ATTR __uninitialized_psram("solar_os")
+#define EXT_RAM_NOINIT_ATTR __uninitialized_psram("solar_os")
 #define IRAM_ATTR
 #define DRAM_ATTR
 #define RTC_DATA_ATTR

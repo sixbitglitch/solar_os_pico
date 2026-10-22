@@ -42,6 +42,7 @@ void esp_log_level_set(const char *tag, esp_log_level_t level);
                    (unsigned long)(esp_timer_get_time() / 1000),              \
                    (tag),                                                     \
                    ##__VA_ARGS__);                                            \
+            fflush(stdout);                                                   \
         }                                                                     \
     } while (0)
 

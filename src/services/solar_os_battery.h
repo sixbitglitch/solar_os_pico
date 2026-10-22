@@ -52,6 +52,10 @@ typedef struct {
     bool external_power;
     bool charging_valid;
     bool charging;
+    /* When set, solar_os_battery_get_status uses percent instead of deriving
+     * it from battery_mv (fuel-gauge boards like PicoCalc). */
+    bool percent_valid;
+    uint8_t percent;
 } solar_os_battery_sample_t;
 
 typedef esp_err_t (*solar_os_battery_provider_read_fn_t)(

@@ -26,6 +26,7 @@
 #include "solar_os_cdc.h"
 #include "solar_os_nvs_backup.h"
 #include "solar_os_ramfs.h"
+#include "solar_os_ble_keyboard.h"
 
 esp_err_t flash_storage_mount(const char *mount_point)
 {
@@ -172,4 +173,11 @@ esp_err_t solar_os_nvs_backup_restore(const char *path,
         memset(result, 0, sizeof(*result));
     }
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+size_t solar_os_ble_keyboard_read_chars(char *buffer, size_t buffer_len)
+{
+    (void)buffer;
+    (void)buffer_len;
+    return 0U;
 }
